@@ -1,10 +1,9 @@
 // src/lib/checklist.js
-
 export const MASTER_CHECKLIST = {
   Kitchen: [
-    "Wipe counters",
+    "Wipe counters and fronts of cabinets",
     "Clean sink",
-    "Wipe exterior of appliances",
+    "Clean appliances",
     "Microwave inside & outside",
     "Stovetop scrubbed",
     "Empty trash",
@@ -30,7 +29,6 @@ export const MASTER_CHECKLIST = {
     "Vacuum/sweep floor",
     "Wipe coffee/end tables",
     "Straighten pillows/blankets",
-    "Empty trash"
   ],
   Other: [
     "Check owner’s closet",
@@ -38,5 +36,7 @@ export const MASTER_CHECKLIST = {
     "Sweep garage",
     "Spot clean walls/doors",
     "Check supplies (toilet paper, soap, etc.)"
+    "Check Couch cushions, cupboard fronts, drawers"
   ]
 };
+
