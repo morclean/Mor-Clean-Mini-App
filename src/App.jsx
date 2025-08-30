@@ -169,22 +169,49 @@ function CleanerView() {
             {/* ROOM-BY-ROOM CHECKLIST */}
             {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
               <div key={room} className="mt-4">
-                <h5 className="font-semibold">{room}</h5>
-                <ul className="space-y-2">
-                  {tasks.map((t) => (
-                    <li key={t} className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                        checked={!!checked[job.id]?.[room]?.[t]}
-                        onChange={() => toggleTask(job.id, room, t)}
-                      />
-                      <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>{t}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+                {/* ROOM-BY-ROOM CHECKLIST (collapsible) */}
+<div className="mt-4 space-y-3">
+  {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => {
+    const isOpen = !!openRooms[job.id]?.[room];
+    return (
+      <div key={room} className="border rounded-xl">
+        <button
+          type="button"
+          onClick={() => toggleRoom(job.id, room)}
+          className="w-full flex items-center justify-between px-4 py-3"
+        >
+          <span className="font-semibold text-slate-800">{room}</span>
+          {isOpen ? (
+            <ChevronDown className="w-5 h-5 text-slate-500" />
+          ) : (
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          )}
+        </button>
+
+        {isOpen && (
+          <div className="px-4 pb-4">
+            <ul className="space-y-2">
+              {tasks.map((t) => (
+                <li key={t} className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    checked={!!checked[job.id]?.[room]?.[t]}
+                    onChange={() => toggleTask(job.id, room, t)}
+                  />
+                  <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>
+                    {t}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  })}
+</div>
+
 
             {/* PHOTO UPLOAD */}
             <div className="mt-4 p-3 border rounded-xl bg-slate-50">
