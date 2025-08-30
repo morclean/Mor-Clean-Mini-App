@@ -190,27 +190,28 @@ function CleanerView() {
 
         {isOpen && (
           <div className="px-4 pb-4">
-            <ul className="space-y-2">
-              {tasks.map((t) => (
-                <li key={t} className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                    checked={!!checked[job.id]?.[room]?.[t]}
-                    onChange={() => toggleTask(job.id, room, t)}
-                  />
-                  <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>
-                    {t}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-    );
-  })}
-</div>
+            {/* ROOM-BY-ROOM CHECKLIST */}
+{Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
+  <div key={room} className="mt-4">
+    <h5 className="font-semibold">{room}</h5>
+    <ul className="space-y-2">
+      {tasks.map((t) => (
+        <li key={t} className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            checked={!!checked[job.id]?.[room]?.[t]}
+            onChange={() => toggleTask(job.id, room, t)}
+          />
+          <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>
+            {t}
+          </span>
+        </li>
+      ))}
+    </ul>
+  </div>
+))}
+
 
 
             {/* PHOTO UPLOAD */}
