@@ -63,15 +63,32 @@ function CleanerView() {
     })();
   }, []);
 
-  const toggleTask = (jobId, room, task) => {
-    setChecked((prev) => {
-      const next = { ...prev };
-      if (!next[jobId]) next[jobId] = {};
-      if (!next[jobId][room]) next[jobId][room] = {};
-      next[jobId][room][task] = !next[jobId][room][task];
-      return next;
+ // REPLACE your old toggleTask with this version
+const toggleTask = async (jobId, room, task) => {
+  // 1) build the *new* checked object first (so we can also save the same thing)
+  const newChecked = (() => {
+    const next = structuredClone(checked); // safe copy
+    if (!next[jobId]) next[jobId] = {};
+    if (!next[jobId][room]) next[jobId][room] = {};
+    next[jobId][room][task] = !next[jobId][room][task];
+    return next;
+  })();
+
+  // 2) update the UI immediately
+  setChecked(newChecked);
+
+  // 3) persist to Supabase -> progress table
+  try {
+    await supabase.from("progress").upsert({
+      job_key: jobId,
+      checklist: newChecked[jobId],      // save the whole job's room/task map
+      updated_at: new Date().toISOString()
     });
-  };
+  } catch (err) {
+    console.error("Error saving progress:", err);
+  }
+};
+
 
   const onFiles = (jobId, list) =>
     setFiles((prev) => ({ ...prev, [jobId]: list }));
