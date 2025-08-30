@@ -1,42 +1,55 @@
 // src/lib/checklist.js
 export const MASTER_CHECKLIST = {
   Kitchen: [
-    "Wipe counters and fronts of cabinets",
-    "Clean sink",
-    "Clean appliances",
-    "Microwave inside & outside",
-    "Stovetop scrubbed",
-    "Empty trash",
-    "Sweep & mop floor"
+    "Wipe counters & backsplash",
+    "Clean sink & faucet",
+    "Wipe cabinet fronts",
+    "Clean microwave inside & out",
+    "Wipe appliances (fridge, oven, dishwasher)",
+    "Stove top cleaned",
+    "Empty trash / replace liner",
+    "Sweep & mop floor",
   ],
-  Bathroom: [
-    "Scrub toilet",
-    "Clean sink & counters",
-    "Wipe mirrors",
-    "Scrub shower/tub",
-    "Empty trash",
-    "Sweep & mop floor"
+  Bathrooms: [
+    "Scrub toilet (inside & out)",
+    "Clean sink & vanity",
+    "Wipe mirror",
+    "Scrub shower/tub walls & floor",
+    "Polish faucets",
+    "Empty trash / replace liner",
+    "Sweep & mop floor",
   ],
-  Bedroom: [
+  Bedrooms: [
+    "Dust surfaces & furniture",
+    "Change linens (if provided)",
     "Make beds",
-    "Dust all surfaces",
-    "Clean mirrors",
-    "Vacuum or sweep",
-    "Empty trash"
+    "Vacuum/sweep floors",
+    "Empty trash",
   ],
   LivingRoom: [
     "Dust surfaces",
-    "Vacuum/sweep floor",
-    "Wipe coffee/end tables",
+    "Wipe coffee & side tables",
     "Straighten pillows/blankets",
+    "Vacuum/sweep/mop floors",
+    "Empty trash",
   ],
-  Other: [
-    "Check owner’s closet",
-    "Check garbage days",
-    "Sweep garage",
-    "Spot clean walls/doors",
-    "Check supplies (toilet paper, soap, etc.)"
-    "Check Couch cushions, cupboard fronts, drawers"
-  ]
+  LaundryRoom: [
+    "Wipe washer/dryer surfaces",
+    "Clean lint trap",
+    "Sweep & mop floor",
+  ],
+  Garage: [
+    "Sweep floor",
+    "Check doors closed/locked",
+  ],
+  Exterior: [
+    "Sweep front entry/porch",
+    "Check for packages",
+    "Empty exterior trash if full",
+  ],
+  Admin: [
+    "Check owner’s closet is organized",
+    "Confirm trash/recycle day",
+    "Turn off lights & lock doors",
+  ],
 };
-
