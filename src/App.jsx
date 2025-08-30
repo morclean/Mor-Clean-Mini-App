@@ -18,6 +18,138 @@ function CleanerView() {
   const [done, setDone] = React.useState({});
   const [files, setFiles] = React.useState({});     // { [jobId]: FileList }
 
+  // 1) LOAD JOBS FROM SUPABASE (today + future)
+  React.useEffect(() => {
+    (async () => {
+      const today = new Date().toISOString().slice(0,10);
+      const { data, error } = await supabase
+        .from("jobs")
+        .select("*")
+        .gte("date", today)
+        .order("date", { ascending: true });
+      if (error) {
+        console.error(error);
+        setJobs([]);
+      } else {
+        setJobs(data || []);
+      }
+    })();
+  }, []);
+
+  // helpers
+  const toggleTask = (jobId, room, task) => {
+    setChecked(prev => {
+      const next = { ...prev };
+      if (!next[jobId]) next[jobId] = {};
+      if (!next[jobId][room]) next[jobId][room] = {};
+      next[jobId][room][task] = !next[jobId][room][task];
+      return next;
+    });
+  };
+  const onFiles = (jobId, list) => setFiles(prev => ({ ...prev, [jobId]: list }));
+
+  // 2) SAVE COMPLETION + UPLOAD PHOTOS
+  async function completeJob(job) {
+    const uploaded = [];
+    const list = files[job.id] || [];
+    for (const file of list) {
+      const key = `${job.id}/${Date.now()}_${file.name}`;
+      const { error: upErr } = await supabase.storage.from("photos").upload(key, file, { upsert: true });
+      if (upErr) {
+        console.error(upErr);
+      } else {
+        const { data: { publicUrl } } = supabase.storage.from("photos").getPublicUrl(key);
+        uploaded.push(publicUrl);
+      }
+    }
+
+    const { error: insErr } = await supabase.from("completions").insert({
+      job_id: job.id,
+      checklist: checked[job.id] || {},
+      photos: uploaded,
+      cleaner_name: "MOR Cleaner",
+      client_phone: job.client_phone || ""
+    });
+    if (insErr) {
+      console.error(insErr);
+      alert("Error saving completion");
+      return;
+    }
+
+    setDone(d => ({ ...d, [job.id]: true }));
+  }
+
+  if (!jobs.length) {
+    return <p className="text-sm text-slate-500">No upcoming jobs found. Add one in Supabase → jobs.</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {jobs.map(job => (
+        <div key={job.id} className="border rounded-2xl p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">{job.title}</h3>
+              <p className="text-emerald-900 font-medium">{job.client}</p>
+              <p className="text-sm text-slate-600">{job.address}</p>
+              <p className="text-sm text-slate-600">{job.date} {job.start}–{job.end}</p>
+            </div>
+            <div className="flex flex-col items-end gap-2">
+              <span className={`px-3 py-1 rounded-full text-xs ${done[job.id] ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                {done[job.id] ? "Completed" : "In progress"}
+              </span>
+              {!done[job.id] && (
+                <button onClick={() => completeJob(job)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm">
+                  ✔ Mark Complete
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ROOM-BY-ROOM CHECKLIST */}
+          {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
+            <div key={room} className="mt-4">
+              <h4 className="font-semibold">{room}</h4>
+              <ul className="space-y-2">
+                {tasks.map(t => (
+                  <li key={t} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4"
+                      checked={!!checked[job.id]?.[room]?.[t]}
+                      onChange={() => toggleTask(job.id, room, t)}
+                    />
+                    <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>
+                      {t}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+
+          {/* PHOTO UPLOAD */}
+          <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              📷 Upload images
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={e => onFiles(job.id, e.target.files)}
+              />
+            </label>
+            <p className="text-xs text-slate-500 mt-2">Add before/after photos.</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+
   // 1) LOAD JOBS FROM SUPABASE
   React.useEffect(() => {
     (async () => {
