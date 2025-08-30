@@ -1,4 +1,6 @@
-// src/App.jsx — CLEAN VERSION
+import { MASTER_CHECKLIST } from "./lib/checklist";
+import { Check, Clock, Camera, Calendar, MapPin, LogIn, LogOut, Send, ChevronDown, ChevronRight } from "lucide-react";
+
 
 import { supabase } from "./lib/supabase";
 import { MASTER_CHECKLIST } from "./lib/checklist";
