@@ -1,27 +1,25 @@
+// src/App.jsx — CLEAN VERSION
+
 import { supabase } from "./lib/supabase";
 import { MASTER_CHECKLIST } from "./lib/checklist";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Check, Clock, Camera, Calendar, MapPin, LogIn, LogOut, Send } from "lucide-react";
 
 const fmtTime = (d) => new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const todayISO = () => new Date().toISOString().slice(0,10);
-]);
-const load = (k, fallback) => {
-  try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
-};
-const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
 function CleanerView() {
-  const [jobs, setJobs] = React.useState([]);
-  const [checked, setChecked] = React.useState({}); // { [jobId]: { [room]: { [task]: true } } }
-  const [done, setDone] = React.useState({});
-  const [files, setFiles] = React.useState({});     // { [jobId]: FileList }
+  const [jobs, setJobs] = useState([]);
+  const [checked, setChecked] = useState({}); // { [jobId]: { [room]: { [task]: true } } }
+  const [done, setDone] = useState({});
+  const [files, setFiles] = useState({});     // { [jobId]: FileList }
+  const [clockIn, setClockIn] = useState(null);
 
-  // 1) LOAD JOBS FROM SUPABASE (today + future)
-  React.useEffect(() => {
+  // Load jobs from Supabase (today + future)
+  useEffect(() => {
     (async () => {
-      const today = new Date().toISOString().slice(0,10);
+      const today = todayISO();
       const { data, error } = await supabase
         .from("jobs")
         .select("*")
@@ -36,9 +34,9 @@ function CleanerView() {
     })();
   }, []);
 
-  // helpers
+  // checklist helpers
   const toggleTask = (jobId, room, task) => {
-    setChecked(prev => {
+    setChecked((prev) => {
       const next = { ...prev };
       if (!next[jobId]) next[jobId] = {};
       if (!next[jobId][room]) next[jobId][room] = {};
@@ -46,9 +44,9 @@ function CleanerView() {
       return next;
     });
   };
-  const onFiles = (jobId, list) => setFiles(prev => ({ ...prev, [jobId]: list }));
+  const onFiles = (jobId, list) => setFiles((prev) => ({ ...prev, [jobId]: list }));
 
-  // 2) SAVE COMPLETION + UPLOAD PHOTOS
+  // Save completion + upload photos
   async function completeJob(job) {
     const uploaded = [];
     const list = files[job.id] || [];
@@ -76,7 +74,7 @@ function CleanerView() {
       return;
     }
 
-    setDone(d => ({ ...d, [job.id]: true }));
+    setDone((d) => ({ ...d, [job.id]: true }));
   }
 
   if (!jobs.length) {
@@ -85,225 +83,23 @@ function CleanerView() {
 
   return (
     <div className="space-y-6">
-      {jobs.map(job => (
-        <div key={job.id} className="border rounded-2xl p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">{job.title}</h3>
-              <p className="text-emerald-900 font-medium">{job.client}</p>
-              <p className="text-sm text-slate-600">{job.address}</p>
-              <p className="text-sm text-slate-600">{job.date} {job.start}–{job.end}</p>
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              <span className={`px-3 py-1 rounded-full text-xs ${done[job.id] ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-                {done[job.id] ? "Completed" : "In progress"}
-              </span>
-              {!done[job.id] && (
-                <button onClick={() => completeJob(job)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm">
-                  ✔ Mark Complete
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* ROOM-BY-ROOM CHECKLIST */}
-          {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
-            <div key={room} className="mt-4">
-              <h4 className="font-semibold">{room}</h4>
-              <ul className="space-y-2">
-                {tasks.map(t => (
-                  <li key={t} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4"
-                      checked={!!checked[job.id]?.[room]?.[t]}
-                      onChange={() => toggleTask(job.id, room, t)}
-                    />
-                    <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>
-                      {t}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-
-          {/* PHOTO UPLOAD */}
-          <div className="mt-4 p-3 border rounded-xl bg-slate-50">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              📷 Upload images
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={e => onFiles(job.id, e.target.files)}
-              />
-            </label>
-            <p className="text-xs text-slate-500 mt-2">Add before/after photos.</p>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-
-
-  // 1) LOAD JOBS FROM SUPABASE
-  React.useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase
-        .from("jobs")
-        .select("*")
-        .gte("date", new Date().toISOString().slice(0,10))   // today and future
-        .order("date", { ascending: true });
-      if (!error) setJobs(data || []);
-      else console.error(error);
-    })();
-  }, []);
-
-  // helpers
-  const toggleTask = (jobId, room, task) => {
-    setChecked(prev => {
-      const next = { ...prev };
-      if (!next[jobId]) next[jobId] = {};
-      if (!next[jobId][room]) next[jobId][room] = {};
-      next[jobId][room][task] = !next[jobId][room][task];
-      return next;
-    });
-  };
-  const onFiles = (jobId, list) => setFiles(prev => ({ ...prev, [jobId]: list }));
-
-  // 2) SAVE COMPLETION + UPLOAD PHOTOS
-  async function completeJob(job) {
-    const uploaded = [];
-    const list = files[job.id] || [];
-    for (const file of list) {
-      const key = `${job.id}/${Date.now()}_${file.name}`;
-      const { error: upErr } = await supabase.storage.from("photos").upload(key, file, { upsert: true });
-      if (!upErr) {
-        const { data: { publicUrl } } = supabase.storage.from("photos").getPublicUrl(key);
-        uploaded.push(publicUrl);
-      } else {
-        console.error(upErr);
-      }
-    }
-
-    const { error: insErr } = await supabase.from("completions").insert({
-      job_id: job.id,
-      checklist: checked[job.id] || {},
-      photos: uploaded,
-      cleaner_name: "MOR Cleaner",
-      client_phone: job.client_phone || ""
-    });
-    if (insErr) {
-      console.error(insErr);
-      alert("Error saving completion");
-      return;
-    }
-
-    setDone(d => ({ ...d, [job.id]: true }));
-  }
-
-  if (!jobs.length) {
-    return <p className="text-sm text-slate-500">No upcoming jobs found. Add one in Supabase → jobs.</p>;
-  }
-
-  return (
-    <div className="space-y-6">
-      {jobs.map(job => (
-        <div key={job.id} className="border rounded-2xl p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">{job.title}</h3>
-              <p className="text-emerald-900 font-medium">{job.client}</p>
-              <p className="text-sm text-slate-600">{job.address}</p>
-              <p className="text-sm text-slate-600">{job.date} {job.start}–{job.end}</p>
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              <span className={`px-3 py-1 rounded-full text-xs ${done[job.id] ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-                {done[job.id] ? "Completed" : "In progress"}
-              </span>
-              {!done[job.id] && (
-                <button onClick={() => completeJob(job)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm">
-                  ✔ Mark Complete
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* ROOM-BY-ROOM CHECKLIST */}
-          {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
-            <div key={room} className="mt-4">
-              <h4 className="font-semibold">{room}</h4>
-              <ul className="space-y-2">
-                {tasks.map(t => (
-                  <li key={t} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4"
-                      checked={!!checked[job.id]?.[room]?.[t]}
-                      onChange={() => toggleTask(job.id, room, t)}
-                    />
-                    <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>
-                      {t}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-
-          {/* PHOTO UPLOAD */}
-          <div className="mt-4 p-3 border rounded-xl bg-slate-50">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              📷 Upload images
-              <input type="file" accept="image/*" multiple className="hidden" onChange={e => onFiles(job.id, e.target.files)} />
-            </label>
-            <p className="text-xs text-slate-500 mt-2">Add before/after photos.</p>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-
-  useEffect(() => save("mor_clockIn", clockIn), [clockIn]);
-  useEffect(() => save("mor_jobs", jobs), [jobs]);
-  useEffect(() => save("mor_done", done), [done]);
-  useEffect(() => save("mor_checked", checked), [checked]);
-
-  const onToggleTask = (jobId, task) => {
-    setChecked((prev) => ({
-      ...prev,
-      [jobId]: { ...(prev[jobId] || {}), [task]: !(prev[jobId]?.[task]) },
-    }));
-  };
-
-  const onComplete = (jobId) => {
-    setDone((d) => ({ ...d, [jobId]: true }));
-  };
-
-  return (
-    <div className="space-y-6">
+      {/* Shift card */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="p-5 rounded-2xl bg-emerald-50 shadow-sm border border-emerald-100">
           <div className="flex items-center gap-3">
-            <Clock className="w-5 h-5 text-emerald-700"/>
+            <Clock className="w-5 h-5 text-emerald-700" />
             <h3 className="font-semibold text-emerald-900">Shift</h3>
           </div>
           <div className="mt-3 flex items-center gap-3">
             {!clockIn ? (
               <button onClick={() => setClockIn(Date.now())} className="px-4 py-2 rounded-xl bg-emerald-600 text-white flex items-center gap-2 shadow hover:bg-emerald-700">
-                <LogIn className="w-4 h-4"/> Clock In
+                <LogIn className="w-4 h-4" /> Clock In
               </button>
             ) : (
               <>
                 <span className="text-sm text-emerald-900/80">Clocked in at <strong>{fmtTime(clockIn)}</strong></span>
                 <button onClick={() => setClockIn(null)} className="px-4 py-2 rounded-xl bg-rose-600 text-white flex items-center gap-2 shadow hover:bg-rose-700">
-                  <LogOut className="w-4 h-4"/> Clock Out
+                  <LogOut className="w-4 h-4" /> Clock Out
                 </button>
               </>
             )}
@@ -312,25 +108,26 @@ function CleanerView() {
 
         <div className="p-5 rounded-2xl bg-white shadow-sm border">
           <div className="flex items-center gap-3">
-            <Calendar className="w-5 h-5 text-emerald-700"/>
+            <Calendar className="w-5 h-5 text-emerald-700" />
             <h3 className="font-semibold text-slate-800">Today's Jobs</h3>
           </div>
           <p className="text-sm text-slate-500 mt-1">{todayISO()}</p>
         </div>
       </div>
 
+      {/* Jobs */}
       <div className="grid gap-5">
         {jobs.map((job) => (
-          <motion.div key={job.id} initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className={`rounded-2xl border p-5 shadow-sm ${done[job.id] ? "bg-emerald-50/70" : "bg-white"}`}>
+          <motion.div key={job.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`rounded-2xl border p-5 shadow-sm ${done[job.id] ? "bg-emerald-50/70" : "bg-white"}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h4 className="text-lg font-semibold text-slate-800">{job.title}</h4>
                 <p className="text-emerald-900 font-medium">{job.client}</p>
                 <div className="mt-1 text-sm text-slate-600 flex flex-wrap items-center gap-2">
-                  <MapPin className="w-4 h-4"/> <span>{job.address}</span>
+                  <MapPin className="w-4 h-4" /> <span>{job.address}</span>
                 </div>
                 <div className="text-sm text-slate-600 flex items-center gap-2 mt-1">
-                  <Clock className="w-4 h-4"/> <span>{job.window}</span>
+                  <Clock className="w-4 h-4" /> <span>{job.start}{job.end ? `–${job.end}` : ""}</span>
                 </div>
               </div>
               <div className="flex flex-col items-end gap-2">
@@ -338,43 +135,41 @@ function CleanerView() {
                   {done[job.id] ? "Completed" : "In progress"}
                 </span>
                 {!done[job.id] && (
-                  <button onClick={() => onComplete(job.id)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm flex items-center gap-2 hover:bg-emerald-700">
-                    <Check className="w-4 h-4"/> Mark Complete
+                  <button onClick={() => completeJob(job)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm">
+                    <Check className="w-4 h-4" /> Mark Complete
                   </button>
                 )}
               </div>
             </div>
 
-            <p className="text-sm text-slate-600 mt-3">{job.notes}</p>
-
-            <div className="mt-4 grid sm:grid-cols-2 gap-6">
-              <div>
-                <h5 className="font-medium text-slate-800 mb-2">Checklist</h5>
+            {/* ROOM-BY-ROOM CHECKLIST */}
+            {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
+              <div key={room} className="mt-4">
+                <h5 className="font-semibold">{room}</h5>
                 <ul className="space-y-2">
-                  {job.tasks.map((t) => (
+                  {tasks.map((t) => (
                     <li key={t} className="flex items-center gap-3">
                       <input
                         type="checkbox"
                         className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                        checked={!!checked[job.id]?.[t]}
-                        onChange={() => onToggleTask(job.id, t)}
+                        checked={!!checked[job.id]?.[room]?.[t]}
+                        onChange={() => toggleTask(job.id, room, t)}
                       />
-                      <span className={checked[job.id]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>{t}</span>
+                      <span className={checked[job.id]?.[room]?.[t] ? "line-through text-slate-400" : "text-slate-700"}>{t}</span>
                     </li>
                   ))}
                 </ul>
               </div>
-              <div>
-                <h5 className="font-medium text-slate-800 mb-2">Photos (Before / After)</h5>
-                <div className="p-3 border rounded-xl bg-slate-50">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <Camera className="w-4 h-4 text-slate-600"/>
-                    <span>Upload images</span>
-                    <input type="file" accept="image/*" multiple className="hidden"/>
-                  </label>
-                  <p className="text-xs text-slate-500 mt-2">Tip: take wide shots and any damage notes.</p>
-                </div>
-              </div>
+            ))}
+
+            {/* PHOTO UPLOAD */}
+            <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <Camera className="w-4 h-4 text-slate-600" />
+                <span>Upload images</span>
+                <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => onFiles(job.id, e.target.files)} />
+              </label>
+              <p className="text-xs text-slate-500 mt-2">Add before/after photos.</p>
             </div>
           </motion.div>
         ))}
@@ -407,7 +202,7 @@ function CustomerView() {
     return (
       <div className="p-6 rounded-2xl border bg-emerald-50">
         <h3 className="text-emerald-900 font-semibold text-lg">Request received 🎉</h3>
-        <p className="text-slate-700 mt-2">Thanks, {data.name || "friend"}! We'll text you from <strong>386‑318‑5521</strong> to confirm details and pricing. Same‑day payment and card on file policy applies.</p>
+        <p className="text-slate-700 mt-2">Thanks, {data.name || "friend"}! We'll text you from <strong>386-318-5521</strong> to confirm details and pricing.</p>
         <div className="mt-4 text-sm text-slate-600">
           <p><strong>Service:</strong> {data.service} • {data.beds}bd/{data.baths}ba</p>
           <p><strong>Date:</strong> {data.date || "TBD"} • <strong>Window:</strong> {data.window}</p>
@@ -443,7 +238,7 @@ function CustomerView() {
         <input type="date" className="px-3 py-2 rounded-xl border" value={data.date} onChange={(e)=>setData({...data,date:e.target.value})}/>
         <select className="px-3 py-2 rounded-xl border" value={data.window} onChange={(e)=>setData({...data,window:e.target.value})}>
           <option>Morning (9a–12p)</option>
-          <option>Mid‑day (12p–3p)</option>
+          <option>Mid-day (12p–3p)</option>
           <option>Afternoon (3p–6p)</option>
         </select>
       </div>
@@ -455,7 +250,7 @@ function CustomerView() {
           <Send className="w-4 h-4"/> Submit request
         </button>
         <a className="text-emerald-700 underline" href="https://www.morcleandaytona.com" target="_blank" rel="noreferrer">Visit website</a>
-        <a className="text-emerald-700 underline" href="tel:13863185521">Call/Text 386‑318‑5521</a>
+        <a className="text-emerald-700 underline" href="tel:13863185521">Call/Text 386-318-5521</a>
       </div>
     </form>
   );
@@ -472,7 +267,7 @@ export default function App() {
             <div className="w-10 h-10 rounded-2xl bg-emerald-600"></div>
             <div>
               <h1 className="text-xl font-bold tracking-tight text-emerald-900">M.O.R. Clean Daytona</h1>
-              <p className="text-xs text-emerald-800/70">Women‑owned • Family‑operated</p>
+              <p className="text-xs text-emerald-800/70">Women-owned • Family-operated</p>
             </div>
           </div>
           <nav className="flex items-center gap-2 bg-white border rounded-2xl p-1 shadow-sm">
@@ -494,7 +289,7 @@ export default function App() {
               {tab === "cleaner" ? (
                 <>Clock in, view today’s jobs, check off tasks, and attach photos.</>
               ) : (
-                <>Request a clean in under a minute. Same‑day payment • Card on file • No refunds.</>
+                <>Request a clean in under a minute. Same-day payment • Card on file • No refunds.</>
               )}
             </p>
             {tab === "cleaner" ? <CleanerView/> : <CustomerView/>}
