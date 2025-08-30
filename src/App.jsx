@@ -17,34 +17,40 @@ function CleanerView() {
   const [clockIn, setClockIn] = useState(null);
 
   // LOAD JOBS FROM /api/jobs (Google Sheet CSV -> JSON)
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/jobs", { cache: "no-store" });
-        const data = await res.json();
-        const events = data.events || [];
-        // Build a stable key for saving photos/completions without a DB id
-        const mapped = events.map(e => ({
-          id: `${e.date}-${(e.client||"").replace(/\s+/g,"_")}-${(e.title||"").replace(/\s+/g,"_")}`,
-          date: e.date,
-          start: e.start || "",
-          end: e.end || "",
-          title: e.title || "Clean",
-          client: e.client || "",
-          address: e.address || "",
-          notes: e.notes || "",
-          tasks: Array.isArray(e.tasks) ? e.tasks : String(e.tasks||"").split("|").filter(Boolean)
-        }));
-        // show today → next 30 days
-        const today = new Date().toISOString().slice(0,10);
-        const in30  = new Date(Date.now() + 30*24*60*60*1000).toISOString().slice(0,10);
-        setJobs(mapped.filter(j => j.date >= today && j.date <= in30).sort((a,b)=>a.date.localeCompare(b.date)));
-      } catch (e) {
-        console.error(e);
-        setJobs([]);
-      }
-    })();
-  }, []);
+ useEffect(() => {
+  (async () => {
+    try {
+      const res = await fetch("/api/jobs", { cache: "no-store" });
+      const data = await res.json();
+
+      // normalize to the shape the UI expects
+      const events = (data?.events || []).map(e => ({
+        id: `${e.date}-${(e.client||"").replace(/\s+/g,"_")}-${(e.title||"").replace(/\s+/g,"_")}`,
+        date: e.date,
+        start: e.start || "",
+        end: e.end || "",
+        title: e.title || "Clean",
+        client: e.client || "",
+        address: e.address || "",
+        notes: e.notes || "",
+        tasks: Array.isArray(e.tasks) ? e.tasks : String(e.tasks||"").split("|").filter(Boolean),
+      }));
+
+      // show today → next 30 days
+      const today = new Date().toISOString().slice(0,10);
+      const in30  = new Date(Date.now() + 30*24*60*60*1000).toISOString().slice(0,10);
+      const upcoming = events
+        .filter(j => j.date >= today && j.date <= in30)
+        .sort((a,b)=>a.date.localeCompare(b.date));
+
+      setJobs(upcoming);
+    } catch (err) {
+      console.error(err);
+      setJobs([]);
+    }
+  })();
+}, []);
+
 
   const toggleTask = (jobKey, room, task) => {
     setChecked(prev => {
