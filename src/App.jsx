@@ -6,30 +6,7 @@ import { Check, Clock, Camera, Calendar, MapPin, LogIn, LogOut, Send } from "luc
 
 const fmtTime = (d) => new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const todayISO = () => new Date().toISOString().slice(0,10);
-
-const seedJobs = () => ([
-  {
-    id: "job-1",
-    date: todayISO(),
-    title: "2BR/2BA • Monthly • Student Housing",
-    client: "ATP Flight School – Integra Shores #1204",
-    address: "100 Integra Shores Dr, Daytona Beach, FL",
-    window: "10:00a–12:00p",
-    notes: "Use MOR standard + patio included. Laundry already handled.",
-    tasks: ["Kitchen & appliances", "2 bathrooms", "Dust & surfaces", "Floors & baseboards", "Patio sweep & wipe"],
-  },
-  {
-    id: "job-2",
-    date: todayISO(),
-    title: "3BR/2BA • Bi-weekly",
-    client: "Lisa • Riverfront Condo",
-    address: "Riverside Dr, Ormond Beach, FL",
-    window: "1:00p–3:30p",
-    notes: "Both patios included. Olivia is lead.",
-    tasks: ["General tidy", "Glass & mirrors", "Bathrooms", "Mop tile floors", "Patio wipe down"],
-  },
 ]);
-
 const load = (k, fallback) => {
   try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
 };
