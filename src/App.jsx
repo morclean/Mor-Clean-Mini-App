@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { supabase } from "./lib/supabase";
@@ -10,33 +11,32 @@ import {
   MapPin,
   LogIn,
   LogOut,
-  ChevronDown,
-  ChevronRight,
 } from "lucide-react";
 
 const fmtTime = (d) =>
   new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+/* ---------------------------
+   CLEANER PORTAL
+---------------------------- */
 function CleanerView() {
   const [jobs, setJobs] = useState([]);
-  const [checked, setChecked] = useState({});
+  const [checked, setChecked] = useState({}); // { [jobId]: { [room]: { [task]: true } } }
   const [done, setDone] = useState({});
   const [files, setFiles] = useState({});
   const [clockIn, setClockIn] = useState(null);
-  const [openRooms, setOpenRooms] = useState({});
 
-  // load jobs from Google Sheet (/api/jobs)
+  // Load jobs from Google Sheet (/api/jobs)
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/jobs", { cache: "no-store" });
         const data = await res.json();
 
+        // Normalize & create a stable id for each job
         const events = (data?.events || []).map((e) => ({
-          id: `${e.date}-${(e.client || "").replace(/\s+/g, "_")}-${(
-            e.title || "Clean"
-          ).replace(/\s+/g, "_")}`,
+          id: `${e.date}-${(e.client || "").replace(/\s+/g, "_")}-${(e.title || "Clean").replace(/\s+/g, "_")}`,
           date: e.date,
           start: e.start || "",
           end: e.end || "",
@@ -47,9 +47,10 @@ function CleanerView() {
         }));
 
         const today = todayISO();
-        const in30 = new Date(
-          Date.now() + 30 * 24 * 60 * 60 * 1000
-        ).toISOString().slice(0, 10);
+        const in30 = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10);
+
         const upcoming = events
           .filter((j) => j.date >= today && j.date <= in30)
           .sort((a, b) => a.date.localeCompare(b.date));
@@ -72,20 +73,15 @@ function CleanerView() {
     });
   };
 
-  const toggleRoom = (jobId, room) => {
-    setOpenRooms((prev) => ({
-      ...prev,
-      [jobId]: { ...prev[jobId], [room]: !prev[jobId]?.[room] },
-    }));
-  };
-
   const onFiles = (jobId, list) =>
     setFiles((prev) => ({ ...prev, [jobId]: list }));
 
+  // Save completion + upload photos
   async function completeJob(job) {
     const uploaded = [];
     const list = files[job.id] || [];
 
+    // upload photos
     for (const file of list) {
       const key = `${job.id}/${Date.now()}_${file.name}`;
       const { error: upErr } = await supabase.storage
@@ -99,12 +95,14 @@ function CleanerView() {
       }
     }
 
+    // insert completion row
     const { error: insErr } = await supabase.from("completions").insert({
       job_key: job.id,
       checklist: checked[job.id] || {},
       photos: uploaded,
       cleaner_name: "MOR Cleaner",
     });
+
     if (insErr) {
       console.error(insErr);
       alert("Error saving completion");
@@ -117,14 +115,14 @@ function CleanerView() {
   if (!jobs.length) {
     return (
       <p className="text-sm text-slate-500">
-        No upcoming jobs found. Check your Google Sheet dates.
+        No upcoming jobs found. Check your Google Sheet dates (today or later).
       </p>
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Clock in/out + today's date */}
+      {/* Shift / Today */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="p-5 rounded-2xl bg-emerald-50 shadow-sm border">
           <div className="flex items-center gap-3">
@@ -156,9 +154,11 @@ function CleanerView() {
         </div>
 
         <div className="p-5 rounded-2xl bg-white shadow-sm border">
-          <Calendar className="w-5 h-5 text-emerald-700" />
-          <h3 className="font-semibold">Today's Jobs</h3>
-          <p className="text-sm text-slate-500">{todayISO()}</p>
+          <div className="flex items-center gap-3">
+            <Calendar className="w-5 h-5 text-emerald-700" />
+            <h3 className="font-semibold">Today's Jobs</h3>
+          </div>
+          <p className="text-sm text-slate-500 mt-1">{todayISO()}</p>
         </div>
       </div>
 
@@ -170,26 +170,41 @@ function CleanerView() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             className={`rounded-2xl border p-5 shadow-sm ${
-              done[job.id] ? "bg-emerald-50" : "bg-white"
+              done[job.id] ? "bg-emerald-50/70" : "bg-white"
             }`}
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h4 className="text-lg font-semibold">{job.title}</h4>
-                <p className="text-emerald-900">{job.client}</p>
-                <div className="text-sm flex gap-2 mt-1">
-                  <MapPin className="w-4 h-4" /> {job.address}
+                <h4 className="text-lg font-semibold text-slate-800">
+                  {job.title}
+                </h4>
+                <p className="text-emerald-900 font-medium">{job.client}</p>
+                <div className="mt-1 text-sm text-slate-600 flex flex-wrap items-center gap-2">
+                  <MapPin className="w-4 h-4" /> <span>{job.address}</span>
                 </div>
-                <div className="text-sm flex gap-2 mt-1">
-                  <Clock className="w-4 h-4" /> {job.start}{" "}
-                  {job.end ? `–${job.end}` : ""}
+                <div className="text-sm text-slate-600 flex items-center gap-2 mt-1">
+                  <Clock className="w-4 h-4" />{" "}
+                  <span>
+                    {job.start}
+                    {job.end ? `–${job.end}` : ""}
+                  </span>
                 </div>
               </div>
-              <div>
+
+              <div className="flex flex-col items-end gap-2">
+                <span
+                  className={`px-3 py-1 rounded-full text-xs ${
+                    done[job.id]
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {done[job.id] ? "Completed" : "In progress"}
+                </span>
                 {!done[job.id] && (
                   <button
                     onClick={() => completeJob(job)}
-                    className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm"
+                    className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm flex items-center gap-2"
                   >
                     <Check className="w-4 h-4" /> Mark Complete
                   </button>
@@ -197,49 +212,45 @@ function CleanerView() {
               </div>
             </div>
 
-            {/* Room-by-room checklist */}
-            <div className="mt-4 space-y-3">
-              {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => {
-                const isOpen = !!openRooms[job.id]?.[room];
-                return (
-                  <div key={room} className="border rounded-xl">
-                    <button
-                      type="button"
-                      onClick={() => toggleRoom(job.id, room)}
-                      className="w-full flex items-center justify-between px-4 py-3"
-                    >
-                      <span className="font-semibold">{room}</span>
-                      {isOpen ? (
-                        <ChevronDown className="w-5 h-5" />
-                      ) : (
-                        <ChevronRight className="w-5 h-5" />
-                      )}
-                    </button>
-                    {isOpen && (
-                      <div className="px-4 pb-4">
-                        <ul className="space-y-2">
-                          {tasks.map((t) => (
-                            <li key={t} className="flex items-center gap-3">
-                              <input
-                                type="checkbox"
-                                checked={!!checked[job.id]?.[room]?.[t]}
-                                onChange={() => toggleTask(job.id, room, t)}
-                              />
-                              <span>{t}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+            {/* EXPANDED ROOM-BY-ROOM CHECKLIST (no collapsers) */}
+            <h5 className="font-medium text-slate-800 mt-4 mb-2">Checklist</h5>
+            <div className="space-y-4">
+              {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => (
+                <div key={room} className="border rounded-xl">
+                  <div className="px-4 py-3 bg-slate-50 border-b rounded-t-xl">
+                    <span className="font-semibold text-slate-800">{room}</span>
                   </div>
-                );
-              })}
+                  <div className="px-4 py-3">
+                    <ul className="space-y-2">
+                      {tasks.map((t) => (
+                        <li key={t} className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                            checked={!!checked[job.id]?.[room]?.[t]}
+                            onChange={() => toggleTask(job.id, room, t)}
+                          />
+                          <span
+                            className={
+                              checked[job.id]?.[room]?.[t]
+                                ? "line-through text-slate-400"
+                                : "text-slate-700"
+                            }
+                          >
+                            {t}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* Photo upload */}
             <div className="mt-4 p-3 border rounded-xl bg-slate-50">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <Camera className="w-4 h-4" />
+                <Camera className="w-4 h-4 text-slate-600" />
                 <span>Upload images</span>
                 <input
                   type="file"
@@ -257,21 +268,36 @@ function CleanerView() {
   );
 }
 
+/* ---------------------------
+   CUSTOMER PORTAL
+---------------------------- */
 function CustomerView() {
   const [upcoming, setUpcoming] = useState([]);
   const [history, setHistory] = useState([]);
 
-  // fetch from Google Sheet (upcoming) and Supabase (completed)
   useEffect(() => {
     (async () => {
+      // Upcoming (from Google Sheet)
       try {
         const res = await fetch("/api/jobs", { cache: "no-store" });
         const data = await res.json();
-        setUpcoming(data?.events || []);
+        const events = (data?.events || []).map((e) => ({
+          id: `${e.date}-${(e.client || "").replace(/\s+/g, "_")}-${(e.title || "Clean").replace(/\s+/g, "_")}`,
+          date: e.date,
+          start: e.start || "",
+          end: e.end || "",
+          title: e.title || "Clean",
+          client: e.client || "",
+          address: e.address || "",
+        }));
+        // show only today and future
+        const today = todayISO();
+        setUpcoming(events.filter((j) => j.date >= today));
       } catch (e) {
         console.error(e);
       }
 
+      // Past completions (from Supabase)
       const { data: comps } = await supabase
         .from("completions")
         .select("*")
@@ -283,26 +309,47 @@ function CustomerView() {
   return (
     <div className="space-y-6">
       <div className="p-5 rounded-2xl bg-white border">
-        <h3 className="font-semibold">Upcoming Cleans</h3>
+        <h3 className="font-semibold mb-3">Upcoming Cleans</h3>
+        {upcoming.length === 0 && (
+          <p className="text-sm text-slate-500">No scheduled cleans.</p>
+        )}
         {upcoming.map((j) => (
-          <div key={j.id} className="border-b py-2">
-            <strong>{j.date}</strong> – {j.client} ({j.title})
+          <div key={j.id} className="border-b py-2 text-sm">
+            <strong>{j.date}</strong> — {j.client} ({j.title}){" "}
+            {j.start && (
+              <span className="text-slate-500">
+                • {j.start}
+                {j.end ? `–${j.end}` : ""}
+              </span>
+            )}
+            <div className="text-slate-600">{j.address}</div>
           </div>
         ))}
       </div>
 
       <div className="p-5 rounded-2xl bg-white border">
-        <h3 className="font-semibold">Past Cleans</h3>
+        <h3 className="font-semibold mb-3">Past Cleans (Photos)</h3>
+        {history.length === 0 && (
+          <p className="text-sm text-slate-500">No past clean records yet.</p>
+        )}
         {history.map((c) => (
-          <div key={c.id} className="border-b py-2">
-            <strong>{c.job_key}</strong>
+          <div key={c.id} className="border-b py-3">
+            <div className="text-sm">
+              <strong>Job:</strong> {c.job_key}
+              {c.created_at && (
+                <span className="text-slate-500">
+                  {" "}
+                  • {new Date(c.created_at).toLocaleString()}
+                </span>
+              )}
+            </div>
             <div className="flex flex-wrap gap-2 mt-2">
-              {c.photos?.map((url) => (
+              {(c.photos || []).map((url) => (
                 <img
                   key={url}
                   src={url}
                   alt="clean"
-                  className="w-20 h-20 rounded object-cover"
+                  className="w-20 h-20 rounded object-cover border"
                 />
               ))}
             </div>
@@ -313,6 +360,9 @@ function CustomerView() {
   );
 }
 
+/* ---------------------------
+   APP SHELL
+---------------------------- */
 export default function App() {
   const [tab, setTab] = useState("cleaner");
 
