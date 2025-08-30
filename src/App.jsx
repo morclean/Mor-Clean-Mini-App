@@ -1,4 +1,4 @@
-// src/App.jsx
+// src/app.jsx
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { supabase } from "./lib/supabase";
@@ -13,37 +13,53 @@ import {
   LogOut,
   ChevronDown,
   ChevronRight,
+  Phone,
 } from "lucide-react";
 
-/* ---------- small helpers ---------- */
+// helpers
 const fmtTime = (d) =>
   new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const todayISO = () => new Date().toISOString().slice(0, 10);
-const clone = (obj) => JSON.parse(JSON.stringify(obj));
-const isDeepRoom = (room) => /^Deep Clean —/i.test(room);
+const digits = (s) => (s || "").replace(/\D/g, "");
+const isDeepRoom = (room) => room.startsWith("Deep Clean");
 
-/* If a job title or notes includes "deep", we treat it as deep-clean by default */
-const isDeepJob = (job) =>
-  /deep/i.test(job?.title || "") || /deep/i.test(job?.notes || "");
+// tiny localStorage helpers for progress
+const loadLS = (k, fallback) => {
+  try {
+    const v = localStorage.getItem(k);
+    return v ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const saveLS = (k, v) => {
+  try {
+    localStorage.setItem(k, JSON.stringify(v));
+  } catch {}
+};
 
-/* ---------- CLEANER VIEW ---------- */
+// ---------------------- Cleaner View ----------------------
 function CleanerView() {
   const [jobs, setJobs] = useState([]);
-  const [checked, setChecked] = useState({});   // { [jobId]: { [room]: { [task]: true } } }
-  const [done, setDone] = useState({});         // { [jobId]: true }
-  const [files, setFiles] = useState({});       // { [jobId]: FileList }
-  const [clockIn, setClockIn] = useState(null);
-  const [openRooms, setOpenRooms] = useState({}); // { [jobId]: { [room]: true } }
-  const [showDeepOverride, setShowDeepOverride] = useState(false); // global toggle to reveal deep sections
+  const [checked, setChecked] = useState(loadLS("mor_checked", {})); // { [jobId]: { [room]: { [task]: true } } }
+  const [done, setDone] = useState(loadLS("mor_done", {}));
+  const [files, setFiles] = useState({}); // { [jobId]: FileList }
+  const [clockIn, setClockIn] = useState(loadLS("mor_clockIn", null));
+  const [openRooms, setOpenRooms] = useState({}); // { [jobId]: { [room]: boolean } }
 
-  /* 1) Load jobs from Google Sheet via /api/jobs (today → +30d) */
+  // persist to localStorage
+  useEffect(() => saveLS("mor_checked", checked), [checked]);
+  useEffect(() => saveLS("mor_done", done), [done]);
+  useEffect(() => saveLS("mor_clockIn", clockIn), [clockIn]);
+
+  // Load jobs from Google Sheet via /api/jobs and normalize
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/jobs", { cache: "no-store" });
         const payload = await res.json();
 
-        const events = (payload?.events || []).map((e) => ({
+        const all = (payload?.events || []).map((e) => ({
           id: `${e.date}-${(e.client || "").replace(/\s+/g, "_")}-${(e.title || "Clean").replace(/\s+/g, "_")}`,
           date: e.date,
           start: e.start || "",
@@ -52,6 +68,13 @@ function CleanerView() {
           client: e.client || "",
           address: e.address || "",
           notes: e.notes || "",
+          // NEW fields you added
+          client_phone: digits(e.client_phone),
+          service_type: e.service_type || "Standard",
+          assigned_cleaner: e.assigned_cleaner || "",
+          status: e.status || "Scheduled",
+          price: e.price || "",
+          paid: (e.paid ?? "").toString(),
         }));
 
         const today = todayISO();
@@ -59,11 +82,23 @@ function CleanerView() {
           .toISOString()
           .slice(0, 10);
 
-        const upcoming = events
+        const upcoming = all
           .filter((j) => j.date >= today && j.date <= in30)
           .sort((a, b) => a.date.localeCompare(b.date));
 
         setJobs(upcoming);
+
+        // Initialize expand/collapse per job:
+        // Standard rooms open, Deep-clean rooms collapsed.
+        const initOpen = {};
+        for (const j of upcoming) {
+          const rooms = {};
+          Object.keys(MASTER_CHECKLIST).forEach((room) => {
+            rooms[room] = !isDeepRoom(room); // true=open
+          });
+          initOpen[j.id] = rooms;
+        }
+        setOpenRooms(initOpen);
       } catch (err) {
         console.error(err);
         setJobs([]);
@@ -71,96 +106,29 @@ function CleanerView() {
     })();
   }, []);
 
-  /* 2) Auto-expand standard rooms when jobs load */
-  useEffect(() => {
-    if (!jobs.length) return;
-    const init = {};
-    for (const j of jobs) {
-      const rooms = {};
-      Object.keys(MASTER_CHECKLIST).forEach((room) => {
-        if (!isDeepRoom(room)) rooms[room] = true; // standard rooms open by default
-      });
-      init[j.id] = rooms;
-    }
-    setOpenRooms(init);
-  }, [jobs]);
-
-  /* 3) Load any saved progress (checked boxes) from Supabase when jobs load */
-  useEffect(() => {
-    if (!jobs.length) return;
-    (async () => {
-      try {
-        const keys = jobs.map((j) => j.id);
-        const { data, error } = await supabase
-          .from("progress")
-          .select("job_key, checklist, done")
-          .in("job_key", keys);
-
-        if (!error && Array.isArray(data)) {
-          const nextChecked = {};
-          const nextDone = {};
-          data.forEach((row) => {
-            nextChecked[row.job_key] = row.checklist || {};
-            if (row.done) nextDone[row.job_key] = true;
-          });
-          setChecked((prev) => ({ ...prev, ...nextChecked }));
-          setDone((prev) => ({ ...prev, ...nextDone }));
-        }
-      } catch (e) {
-        console.error("load progress error", e);
-      }
-    })();
-  }, [jobs]);
-
-  /* expand / collapse helpers */
-  const toggleRoom = (jobId, room) => {
+  const toggleRoom = (jobId, room) =>
     setOpenRooms((prev) => ({
       ...prev,
-      [jobId]: { ...prev[jobId], [room]: !prev[jobId]?.[room] },
+      [jobId]: { ...(prev[jobId] || {}), [room]: !prev[jobId]?.[room] },
     }));
-  };
-  const setAllRoomsOpen = (jobId, open) => {
-    const next = {};
-    Object.keys(MASTER_CHECKLIST).forEach((room) => {
-      // respect deep toggle: only include deep if override is on OR job is deep
-      if (showDeepOverride || isDeepJob(jobs.find((j) => j.id === jobId)) || !isDeepRoom(room)) {
-        next[room] = open;
-      }
-    });
-    setOpenRooms((prev) => ({ ...prev, [jobId]: next }));
-  };
 
-  /* Persisted toggle */
-  const toggleTask = async (jobId, room, task) => {
-    const newChecked = (() => {
-      const next = clone(checked);
+  const toggleTask = (jobId, room, task) =>
+    setChecked((prev) => {
+      const next = structuredClone(prev || {});
       if (!next[jobId]) next[jobId] = {};
       if (!next[jobId][room]) next[jobId][room] = {};
       next[jobId][room][task] = !next[jobId][room][task];
       return next;
-    })();
+    });
 
-    setChecked(newChecked);
-
-    try {
-      await supabase.from("progress").upsert({
-        job_key: jobId,
-        checklist: newChecked[jobId],
-        updated_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.error("Error saving progress:", err);
-    }
-  };
-
-  /* Photo input handler */
   const onFiles = (jobId, list) =>
     setFiles((prev) => ({ ...prev, [jobId]: list }));
 
-  /* Complete Job: uploads photos → storage/photos, writes to completions, marks done in progress */
   async function completeJob(job) {
     const uploaded = [];
     const list = files[job.id] || [];
+
+    // upload photos
     for (const file of list) {
       const key = `${job.id}/${Date.now()}_${file.name}`;
       const { error: upErr } = await supabase.storage
@@ -176,26 +144,19 @@ function CleanerView() {
       }
     }
 
-    // write to completions
+    // save completion
     const { error: insErr } = await supabase.from("completions").insert({
       job_key: job.id,
       checklist: checked[job.id] || {},
       photos: uploaded,
-      cleaner_name: "MOR Cleaner",
+      cleaner_name: job.assigned_cleaner || "MOR Cleaner",
+      client_phone: job.client_phone || "",
     });
     if (insErr) {
       console.error(insErr);
       alert("Error saving completion");
       return;
     }
-
-    // mark as done in progress
-    await supabase.from("progress").upsert({
-      job_key: job.id,
-      checklist: checked[job.id] || {},
-      done: true,
-      updated_at: new Date().toISOString(),
-    });
 
     setDone((d) => ({ ...d, [job.id]: true }));
   }
@@ -210,7 +171,7 @@ function CleanerView() {
 
   return (
     <div className="space-y-6">
-      {/* Shift + Today's Date */}
+      {/* Shift + Today's date */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="p-5 rounded-2xl bg-emerald-50 shadow-sm border">
           <div className="flex items-center gap-3">
@@ -244,191 +205,169 @@ function CleanerView() {
         <div className="p-5 rounded-2xl bg-white shadow-sm border">
           <div className="flex items-center gap-3">
             <Calendar className="w-5 h-5 text-emerald-700" />
-            <h3 className="font-semibold">Today's Jobs</h3>
+            <h3 className="font-semibold text-slate-800">Today's Jobs</h3>
           </div>
           <p className="text-sm text-slate-500 mt-1">{todayISO()}</p>
         </div>
       </div>
 
-      {/* Job Cards */}
+      {/* Jobs */}
       <div className="grid gap-5">
-        {jobs.map((job) => {
-          const deepThisJob = isDeepJob(job);
-          return (
-            <motion.div
-              key={job.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`rounded-2xl border p-5 shadow-sm ${
-                done[job.id] ? "bg-emerald-50/70" : "bg-white"
-              }`}
-            >
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                <div>
-                  <h4 className="text-lg font-semibold">{job.title}</h4>
-                  {job.client && (
-                    <p className="text-emerald-900 font-medium">{job.client}</p>
-                  )}
-                  {job.address && (
-                    <div className="text-sm flex items-center gap-2 mt-1 text-slate-600">
-                      <MapPin className="w-4 h-4" />
-                      <span>{job.address}</span>
-                    </div>
-                  )}
-                  <div className="text-sm flex items-center gap-2 mt-1 text-slate-600">
-                    <Clock className="w-4 h-4" />
-                    <span>
-                      {job.start}
-                      {job.end ? `–${job.end}` : ""}
-                    </span>
-                  </div>
-                  {job.notes && (
-                    <p className="text-sm text-slate-600 mt-2">{job.notes}</p>
-                  )}
+        {jobs.map((job) => (
+          <motion.div
+            key={job.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`rounded-2xl border p-5 shadow-sm ${
+              done[job.id] ? "bg-emerald-50" : "bg-white"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h4 className="text-lg font-semibold text-slate-800">
+                  {job.title} {job.service_type !== "Standard" && `• ${job.service_type}`}
+                </h4>
+                <p className="text-emerald-900 font-medium">{job.client}</p>
+                {job.assigned_cleaner && (
+                  <p className="text-sm text-slate-600 mt-0.5">
+                    Cleaner: <strong>{job.assigned_cleaner}</strong>
+                  </p>
+                )}
+                <div className="mt-1 text-sm text-slate-600 flex flex-wrap items-center gap-2">
+                  <MapPin className="w-4 h-4" /> <span>{job.address}</span>
                 </div>
-
-                <div className="flex flex-col items-end gap-2">
-                  <span
-                    className={`px-3 py-1 rounded-full text-xs ${
-                      done[job.id]
-                        ? "bg-emerald-100 text-emerald-800"
-                        : "bg-amber-100 text-amber-800"
-                    }`}
-                  >
-                    {done[job.id] ? "Completed" : "In progress"}
+                <div className="text-sm text-slate-600 flex items-center gap-2 mt-1">
+                  <Clock className="w-4 h-4" />{" "}
+                  <span>
+                    {job.start}
+                    {job.end ? `–${job.end}` : ""}
                   </span>
-
-                  {!done[job.id] && (
-                    <button
-                      onClick={() => completeJob(job)}
-                      className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm"
-                    >
-                      <Check className="w-4 h-4" /> Mark Complete
-                    </button>
-                  )}
-
-                  {/* Controls: deep toggle + expand/collapse */}
-                  <div className="flex items-center gap-2 mt-2">
-                    <label className="text-xs flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={showDeepOverride || deepThisJob}
-                        onChange={(e) => setShowDeepOverride(e.target.checked)}
-                      />
-                      Show deep-clean tasks
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setAllRoomsOpen(job.id, true)}
-                      className="text-xs px-2 py-1 border rounded"
-                    >
-                      Expand all
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAllRoomsOpen(job.id, false)}
-                      className="text-xs px-2 py-1 border rounded"
-                    >
-                      Collapse all
-                    </button>
-                  </div>
                 </div>
+                {job.price && (
+                  <div className="text-sm text-slate-600 mt-1">Price: {job.price} • Paid: {job.paid}</div>
+                )}
               </div>
 
-              {/* Collapsible room-by-room checklist */}
-              <div className="mt-4 space-y-3">
-                {Object.entries(MASTER_CHECKLIST)
-                  .filter(([room]) => {
-                    // hide deep rooms unless: job is deep OR override is on
-                    if (isDeepRoom(room)) {
-                      return deepThisJob || showDeepOverride;
-                    }
-                    return true;
-                  })
-                  .map(([room, tasks]) => {
-                    const isOpen = !!openRooms[job.id]?.[room];
-                    return (
-                      <div key={room} className="border rounded-xl">
-                        <button
-                          type="button"
-                          onClick={() => toggleRoom(job.id, room)}
-                          className="w-full flex items-center justify-between px-4 py-3"
-                        >
-                          <span className="font-semibold">{room}</span>
-                          {isOpen ? (
-                            <ChevronDown className="w-5 h-5" />
-                          ) : (
-                            <ChevronRight className="w-5 h-5" />
-                          )}
-                        </button>
+              <div className="flex flex-col items-end gap-2">
+                <span
+                  className={`px-3 py-1 rounded-full text-xs ${
+                    done[job.id]
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {done[job.id] ? "Completed" : "In progress"}
+                </span>
+                {!done[job.id] && (
+                  <button
+                    onClick={() => completeJob(job)}
+                    className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm"
+                  >
+                    <Check className="w-4 h-4" /> Mark Complete
+                  </button>
+                )}
+              </div>
+            </div>
 
-                        {isOpen && (
-                          <div className="px-4 pb-4">
-                            <ul className="space-y-2">
-                              {tasks.map((t) => (
-                                <li key={t} className="flex items-center gap-3">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!checked[job.id]?.[room]?.[t]}
-                                    onChange={() =>
-                                      toggleTask(job.id, room, t)
-                                    }
-                                  />
-                                  <span
-                                    className={
-                                      checked[job.id]?.[room]?.[t]
-                                        ? "line-through text-slate-400"
-                                        : "text-slate-700"
-                                    }
-                                  >
-                                    {t}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
+            {/* Room-by-room checklist (expand/collapse) */}
+            <div className="mt-4 space-y-3">
+              {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => {
+                const isOpen = !!openRooms[job.id]?.[room];
+                return (
+                  <div key={room} className="border rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => toggleRoom(job.id, room)}
+                      className="w-full flex items-center justify-between px-4 py-3"
+                    >
+                      <span className="font-semibold text-slate-800">{room}</span>
+                      {isOpen ? (
+                        <ChevronDown className="w-5 h-5 text-slate-500" />
+                      ) : (
+                        <ChevronRight className="w-5 h-5 text-slate-500" />
+                      )}
+                    </button>
+                    {isOpen && (
+                      <div className="px-4 pb-4">
+                        <ul className="space-y-2">
+                          {tasks.map((t) => (
+                            <li key={t} className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                checked={!!checked[job.id]?.[room]?.[t]}
+                                onChange={() => toggleTask(job.id, room, t)}
+                              />
+                              <span
+                                className={
+                                  checked[job.id]?.[room]?.[t]
+                                    ? "line-through text-slate-400"
+                                    : "text-slate-700"
+                                }
+                              >
+                                {t}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
-                    );
-                  })}
-              </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
 
-              {/* Photos */}
-              <div className="mt-4 p-3 border rounded-xl bg-slate-50">
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <Camera className="w-4 h-4" />
-                  <span>Upload images (before/after)</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => onFiles(job.id, e.target.files)}
-                  />
-                </label>
-              </div>
-            </motion.div>
-          );
-        })}
+            {/* Photo upload */}
+            <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <Camera className="w-4 h-4 text-slate-600" />
+                <span>Upload images</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => onFiles(job.id, e.target.files)}
+                />
+              </label>
+              <p className="text-xs text-slate-500 mt-2">
+                Add before/after photos (wide shots + any issues).
+              </p>
+            </div>
+          </motion.div>
+        ))}
       </div>
     </div>
   );
 }
 
-/* ---------- CUSTOMER VIEW ---------- */
-/* Shows upcoming cleans (from Sheet) and past cleans (from Supabase completions),
-   including photos attached by cleaners. */
+// ---------------------- Customer View ----------------------
 function CustomerView() {
+  const [phoneInput, setPhoneInput] = useState("");
+  const [phone, setPhone] = useState(""); // normalized
   const [upcoming, setUpcoming] = useState([]);
   const [history, setHistory] = useState([]);
+  const [ready, setReady] = useState(false);
+
+  const onLock = (e) => {
+    e.preventDefault();
+    const p = digits(phoneInput);
+    if (!p) return alert("Enter your phone number to view your cleans.");
+    setPhone(p);
+    setReady(true);
+  };
 
   useEffect(() => {
+    if (!ready) return;
+
     (async () => {
-      // upcoming from /api/jobs
       try {
+        // Upcoming from Google Sheet filtered by phone
         const res = await fetch("/api/jobs", { cache: "no-store" });
-        const { events } = await res.json();
-        const list = (events || [])
+        const { events = [] } = await res.json();
+
+        const mapped = events
+          .filter((e) => digits(e.client_phone) === phone)
           .map((e) => ({
             id: `${e.date}-${(e.client || "").replace(/\s+/g, "_")}-${(e.title || "Clean").replace(/\s+/g, "_")}`,
             date: e.date,
@@ -437,36 +376,73 @@ function CustomerView() {
             title: e.title || "Clean",
             client: e.client || "",
             address: e.address || "",
+            notes: e.notes || "",
+            service_type: e.service_type || "Standard",
           }))
           .sort((a, b) => a.date.localeCompare(b.date));
-        setUpcoming(list);
+
+        setUpcoming(mapped);
       } catch (e) {
         console.error(e);
       }
 
-      // past completions with photos
+      // Past completions from Supabase filtered by phone
       const { data, error } = await supabase
         .from("completions")
         .select("*")
         .order("created_at", { ascending: false });
-      if (!error) setHistory(data || []);
+
+      if (!error) {
+        setHistory((data || []).filter((c) => digits(c.client_phone) === phone));
+      }
     })();
-  }, []);
+  }, [ready, phone]);
+
+  if (!ready) {
+    return (
+      <form onSubmit={onLock} className="max-w-md space-y-3">
+        <h3 className="font-semibold text-slate-900">Access your cleans</h3>
+        <p className="text-sm text-slate-600">
+          Enter the phone number you used for booking to see your schedule and photos.
+        </p>
+        <div className="flex gap-2">
+          <div className="flex-1 relative">
+            <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+            <input
+              className="w-full pl-9 pr-3 py-2 border rounded-xl"
+              placeholder="e.g. 386-318-5521"
+              value={phoneInput}
+              onChange={(e) => setPhoneInput(e.target.value)}
+              inputMode="tel"
+            />
+          </div>
+          <button className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm">
+            View
+          </button>
+        </div>
+      </form>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <section className="rounded-2xl bg-white border p-5">
-        <h3 className="font-semibold text-slate-900">Upcoming Cleans</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-slate-900">Upcoming Cleans</h3>
+          <span className="text-xs text-slate-500">for • {phone}</span>
+        </div>
         {upcoming.length === 0 && (
           <p className="text-sm text-slate-500 mt-2">
-            No upcoming cleans found.
+            No upcoming cleans found for this number.
           </p>
         )}
         <div className="mt-3 divide-y">
           {upcoming.map((j) => (
             <div key={j.id} className="py-3">
               <div className="text-sm text-slate-600">{j.date}</div>
-              <div className="font-medium">{j.client || j.title}</div>
+              <div className="font-medium">
+                {j.client || j.title} {j.service_type !== "Standard" && `• ${j.service_type}`}
+              </div>
               <div className="text-xs text-slate-500">
                 {j.address} • {j.start}
                 {j.end ? `–${j.end}` : ""}
@@ -477,10 +453,13 @@ function CustomerView() {
       </section>
 
       <section className="rounded-2xl bg-white border p-5">
-        <h3 className="font-semibold text-slate-900">Past Cleans & Photos</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-slate-900">Past Cleans & Photos</h3>
+          <span className="text-xs text-slate-500">for • {phone}</span>
+        </div>
         {history.length === 0 && (
           <p className="text-sm text-slate-500 mt-2">
-            No completed cleans with photos yet.
+            No completed cleans with photos for this number yet.
           </p>
         )}
         <div className="mt-3 space-y-6">
@@ -505,25 +484,11 @@ function CustomerView() {
           ))}
         </div>
       </section>
-
-      <section className="rounded-2xl border p-5 bg-emerald-50/60">
-        <h3 className="font-semibold text-emerald-900">
-          Add it to your phone like an app
-        </h3>
-        <ul className="list-disc ml-5 mt-2 text-sm text-emerald-900/90 space-y-1">
-          <li>
-            <strong>iPhone:</strong> Share ▸ Add to Home Screen.
-          </li>
-          <li>
-            <strong>Android/Chrome:</strong> ⋮ menu ▸ Add to Home Screen.
-          </li>
-        </ul>
-      </section>
     </div>
   );
 }
 
-/* ---------- APP SHELL ---------- */
+// ---------------------- App Shell ----------------------
 export default function App() {
   const [tab, setTab] = useState("cleaner");
 
@@ -563,10 +528,8 @@ export default function App() {
         </div>
       </header>
 
-      <main className="px-5 pb-16">
-        <div className="max-w-5xl mx-auto grid gap-6">
-          {tab === "cleaner" ? <CleanerView /> : <CustomerView />}
-        </div>
+      <main className="max-w-5xl mx-auto p-6">
+        {tab === "cleaner" ? <CleanerView /> : <CustomerView />}
       </main>
 
       <footer className="text-center text-xs text-slate-500 py-6">
@@ -575,6 +538,3 @@ export default function App() {
     </div>
   );
 }
-
-
- 
