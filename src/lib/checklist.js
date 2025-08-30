@@ -1,39 +1,42 @@
+// src/lib/checklist.js
+
 export const MASTER_CHECKLIST = {
   Kitchen: [
-    "Wipe counters & backsplash",
-    "Clean sink & faucet",
-    "Wipe appliances exterior",
-    "Inside microwave",
-    "Mop floor",
-    "Empty trash"
+    "Wipe counters",
+    "Clean sink",
+    "Wipe exterior of appliances",
+    "Microwave inside & outside",
+    "Stovetop scrubbed",
+    "Empty trash",
+    "Sweep & mop floor"
   ],
-  Bathrooms: [
+  Bathroom: [
     "Scrub toilet",
-    "Clean shower/tub",
+    "Clean sink & counters",
     "Wipe mirrors",
-    "Sink & faucet",
-    "Mop floor",
+    "Scrub shower/tub",
+    "Empty trash",
+    "Sweep & mop floor"
+  ],
+  Bedroom: [
+    "Make beds",
+    "Dust all surfaces",
+    "Clean mirrors",
+    "Vacuum or sweep",
     "Empty trash"
   ],
-  Bedrooms: [
-    "Dust furniture",
-    "Wipe surfaces",
-    "Vacuum/mop floor",
-    "Change linens (if provided)"
+  LivingRoom: [
+    "Dust surfaces",
+    "Vacuum/sweep floor",
+    "Wipe coffee/end tables",
+    "Straighten pillows/blankets",
+    "Empty trash"
   ],
-  "Living Room": [
-    "Dust furniture & shelves",
-    "Vacuum/mop floor",
-    "Wipe glass surfaces",
-    "Arrange pillows/throws"
-  ],
-  "Laundry/Closets": [
-    "Organize owner’s closet",
-    "Check supplies/stocking"
-  ],
-  Property: [
-    "Check garbage/recycling days",
-    "Sweep garage/porch/patio",
-    "General tidy outside entry"
+  Other: [
+    "Check owner’s closet",
+    "Check garbage days",
+    "Sweep garage",
+    "Spot clean walls/doors",
+    "Check supplies (toilet paper, soap, etc.)"
   ]
 };
