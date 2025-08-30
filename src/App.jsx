@@ -46,6 +46,22 @@ function CleanerView() {
   const [files, setFiles] = useState({}); // { [jobId]: FileList }
   const [clockIn, setClockIn] = useState(loadLS("mor_clockIn", null));
   const [openRooms, setOpenRooms] = useState({}); // { [jobId]: { [room]: boolean } }
+  // --- simple passcode gate for cleaners ---
+const [pinInput, setPinInput] = useState("");
+const [unlocked, setUnlocked] = useState(false);
+
+// change this to whatever you want (e.g., last 4 of a shared work phone)
+const CLEANER_PIN = "2468";
+
+const onUnlock = (e) => {
+  e.preventDefault();
+  if (pinInput.trim() === CLEANER_PIN) {
+    setUnlocked(true);
+  } else {
+    alert("Wrong passcode");
+  }
+};
+
 
   // persist to localStorage
   useEffect(() => saveLS("mor_checked", checked), [checked]);
@@ -160,6 +176,27 @@ function CleanerView() {
 
     setDone((d) => ({ ...d, [job.id]: true }));
   }
+// lock screen if not unlocked yet
+if (!unlocked) {
+  return (
+    <form onSubmit={onUnlock} className="max-w-sm space-y-3">
+      <h3 className="font-semibold text-slate-900">Cleaner Portal</h3>
+      <p className="text-sm text-slate-600">
+        Enter the passcode to access today’s jobs.
+      </p>
+      <input
+        className="w-full px-3 py-2 border rounded-xl"
+        placeholder="Passcode"
+        value={pinInput}
+        onChange={(e) => setPinInput(e.target.value)}
+        type="password"
+      />
+      <button className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm">
+        Unlock
+      </button>
+    </form>
+  );
+}
 
   if (!jobs.length) {
     return (
