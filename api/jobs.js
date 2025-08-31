@@ -1,140 +1,182 @@
-// pages/api/jobs.js
-// Reads your Google Sheet (published as CSV) and normalizes rows for the app.
-// Put the published CSV link in a Vercel env var named JOBS_CSV_URL.
+// api/jobs.js
+// Serverless API route that fetches your published Google Sheet (CSV) and returns normalized JSON.
 
-export const config = { runtime: "edge" }; // works on Vercel Edge
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv"; // <-- replace this with your real CSV link
 
-// Small CSV parser that handles quotes/commas/newlines.
+// Small CSV parser (no external deps)
 function parseCSV(text) {
   const rows = [];
   let row = [];
-  let val = "";
-  let q = false;
+  let cur = "";
+  let inQuotes = false;
 
   for (let i = 0; i < text.length; i++) {
-    const c = text[i], n = text[i + 1];
+    const c = text[i];
+    const next = text[i + 1];
 
-    if (c === '"') {
-      if (q && n === '"') { val += '"'; i++; }
-      else { q = !q; }
-    } else if (c === ',' && !q) {
-      row.push(val); val = "";
-    } else if ((c === '\n' || c === '\r') && !q) {
-      if (val !== "" || row.length) { row.push(val); rows.push(row); row = []; val = ""; }
-      if (c === '\r' && n === '\n') i++;
+    if (inQuotes) {
+      if (c === '"' && next === '"') {
+        cur += '"'; // escaped quote
+        i++;
+      } else if (c === '"') {
+        inQuotes = false;
+      } else {
+        cur += c;
+      }
     } else {
-      val += c;
+      if (c === '"') {
+        inQuotes = true;
+      } else if (c === ",") {
+        row.push(cur);
+        cur = "";
+      } else if (c === "\n") {
+        row.push(cur);
+        rows.push(row);
+        row = [];
+        cur = "";
+      } else if (c === "\r") {
+        // ignore
+      } else {
+        cur += c;
+      }
     }
   }
-  if (val !== "" || row.length) { row.push(val); rows.push(row); }
+  // last cell
+  if (cur.length > 0 || row.length > 0) {
+    row.push(cur);
+    rows.push(row);
+  }
   return rows;
 }
 
-function firstNonEmpty(obj, keys, fallback = "") {
-  for (const k of keys) {
-    const v = obj[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
-  }
-  return fallback;
+function normalizeHeader(h) {
+  return String(h || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
 }
 
-function makeId(date, client, title) {
-  const clean = (s) => String(s || "").toLowerCase().trim().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
-  return `${clean(date)}-${clean(client)}-${clean(title)}`;
+function safeVal(v) {
+  return typeof v === "string" ? v.trim() : v ?? "";
 }
 
-export default async function handler() {
+function buildId(date, client, title) {
+  const d = safeVal(date);
+  const c = safeVal(client).replace(/\s+/g, "_");
+  const t = safeVal(title).replace(/\s+/g, "_");
+  return `${d}-${c}-${t}`;
+}
+
+// Map likely header names to our canonical fields
+function mapRowToEvent(rowObj) {
+  const date =
+    rowObj.date ||
+    rowObj.service_date ||
+    rowObj.clean_date ||
+    rowObj.when ||
+    "";
+
+  const start =
+    rowObj.start ||
+    rowObj.start_time ||
+    rowObj.window_start ||
+    "";
+
+  const end =
+    rowObj.end ||
+    rowObj.end_time ||
+    rowObj.window_end ||
+    "";
+
+  const client =
+    rowObj.client ||
+    rowObj.customer ||
+    rowObj.client_name ||
+    rowObj.customer_name ||
+    "";
+
+  const title =
+    rowObj.title ||
+    rowObj.service ||
+    rowObj.type ||
+    rowObj.clean_type ||
+    "Clean";
+
+  const address =
+    rowObj.address ||
+    rowObj.location ||
+    rowObj.service_address ||
+    "";
+
+  const notes =
+    rowObj.notes ||
+    rowObj.comment ||
+    rowObj.details ||
+    "";
+
+  const client_phone =
+    rowObj.client_phone ||
+    rowObj.phone ||
+    rowObj.customer_phone ||
+    "";
+
+  const job_id =
+    rowObj.job_id ||
+    rowObj.square_booking_id ||
+    rowObj.booking_id ||
+    "";
+
+  return {
+    id: buildId(date, client, title),
+    date: safeVal(date),
+    start: safeVal(start),
+    end: safeVal(end),
+    client: safeVal(client),
+    title: safeVal(title),
+    address: safeVal(address),
+    notes: safeVal(notes),
+    client_phone: safeVal(client_phone),
+    job_id: safeVal(job_id),
+  };
+}
+
+export default async function handler(req, res) {
   try {
-    const url = process.env.JOBS_CSV_URL;
-    if (!url) {
-      return new Response(JSON.stringify({ error: "Missing JOBS_CSV_URL env var" }), { status: 500 });
+    if (!CSV_URL || !CSV_URL.startsWith("https://docs.google.com/spreadsheets/d/e/")) {
+      return res.status(400).json({ error: "CSV_URL is missing or not a published CSV link." });
     }
 
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) {
-      return new Response(JSON.stringify({ error: `Failed to fetch CSV (${res.status})` }), { status: 500 });
+    const r = await fetch(CSV_URL, { method: "GET", cache: "no-store" });
+    if (!r.ok) {
+      return res.status(401).json({ error: `Failed to fetch CSV (${r.status})` });
     }
-
-    const text = await res.text();
+    const text = await r.text();
     const rows = parseCSV(text);
-    if (!rows.length) return new Response(JSON.stringify({ events: [] }), { status: 200 });
-
-    // Build header map (case-insensitive)
-    const header = rows[0].map(h => String(h || "").trim());
-    const idx = Object.fromEntries(header.map((h, i) => [h.toLowerCase(), i]));
-    const getCell = (r, names = []) => {
-      for (const name of names) {
-        const i = idx[name.toLowerCase()];
-        if (i !== undefined) {
-          const v = r[i];
-          if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
-        }
-      }
-      return "";
-    };
-
-    // Accepted header variants
-    const DATE_KEYS       = ["date", "start_date"];
-    const START_KEYS      = ["start", "start_time", "window_start"];
-    const END_KEYS        = ["end", "end_time", "window_end"];
-    const CLIENT_KEYS     = ["client", "customer", "customer_name", "name"];
-    const TITLE_KEYS      = ["title", "job", "service", "service_type", "type"];
-    const ADDRESS_KEYS    = ["address", "customer_address", "addr", "location_address"];
-    const NOTES_KEYS      = ["notes", "note", "memo", "details"];
-    const PHONE_KEYS      = ["client_phone", "phone", "customer_phone"];
-    const TASKS_KEYS      = ["tasks"]; // optional | pipe-separated
-
-    const events = [];
-
-    for (let r = 1; r < rows.length; r++) {
-      const row = rows[r];
-
-      const date = getCell(row, DATE_KEYS);
-      if (!date) continue;
-
-      const start   = getCell(row, START_KEYS);
-      const end     = getCell(row, END_KEYS);
-      const client  = getCell(row, CLIENT_KEYS);
-      const rawTitle= getCell(row, TITLE_KEYS);
-      const address = getCell(row, ADDRESS_KEYS);
-      const notes   = getCell(row, NOTES_KEYS);
-      const phone   = getCell(row, PHONE_KEYS);
-      const tasksRaw= getCell(row, TASKS_KEYS);
-
-      const service = firstNonEmpty(
-        {
-          service: getCell(row, ["service"]),
-          service_type: getCell(row, ["service_type"]),
-          type: getCell(row, ["type"]),
-          title: rawTitle
-        },
-        ["service", "service_type", "type", "title"],
-        "Clean"
-      );
-
-      const title = firstNonEmpty({ title: rawTitle, service }, ["title", "service"], "Clean");
-      const id = makeId(date, client, title);
-
-      events.push({
-        id,
-        date,
-        start,
-        end,
-        title,           // job name
-        service,         // explicit service type
-        client,
-        address,
-        notes,
-        client_phone: phone,
-        tasks: tasksRaw ? String(tasksRaw).split("|").map(s => s.trim()).filter(Boolean) : [],
-      });
+    if (!rows.length) {
+      return res.status(200).json({ events: [] });
     }
 
-    return new Response(JSON.stringify({ events }), {
-      headers: { "content-type": "application/json", "cache-control": "no-store" },
-      status: 200,
+    const headers = rows[0].map(normalizeHeader);
+    const events = rows.slice(1).map((cells) => {
+      const obj = {};
+      headers.forEach((h, i) => (obj[h] = safeVal(cells[i])));
+      return mapRowToEvent(obj);
     });
+
+    // Only keep today → +60 days (your app also filters, but this keeps the payload smaller)
+    const today = new Date().toISOString().slice(0, 10);
+    const in60 = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const upcoming = events
+      .filter((e) => e.date && e.date >= today && e.date <= in60)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // CORS & cache headers (optional)
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    return res.status(200).json({ events: upcoming });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
+    console.error(e);
+    return res.status(500).json({ error: "Server error reading CSV" });
   }
 }
