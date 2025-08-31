@@ -1,5 +1,5 @@
 // src/app.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Check,
@@ -11,304 +11,284 @@ import {
   LogOut,
   ChevronDown,
   ChevronRight,
-  ImageIcon,
+  Image as ImageIcon,
   Phone,
   User,
   X,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
-// -----------------------------
-// Utilities
-// -----------------------------
-const fmtTime = (d) =>
-  new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// ---------- helpers ----------
+const fmtTime = (d) => new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const norm = (s) => (s ?? "").toString().trim();
 const withinWeek = (iso) => {
   const d = new Date(iso + "T00:00:00");
-  const now = new Date();
-  const diff = (d - new Date(now.toDateString())) / 86400000;
+  const base = new Date(new Date().toDateString());
+  const diff = (d - base) / 86400000;
   return diff >= 0 && diff <= 7;
 };
-const norm = (s) => (s || "").toString().trim();
-const detectType = (titleRaw) => {
-  const t = (titleRaw || "").toLowerCase();
+
+// Normalize any “type/service” value to one of: standard | airbnb | deep
+function normalizeType(raw) {
+  const t = (raw || "").toString().toLowerCase();
+  if (!t) return "";
   if (t.includes("airbnb") || t.includes("turnover")) return "airbnb";
   if (t.includes("deep")) return "deep";
-  return "standard";
-};
+  if (t.includes("standard") || t.includes("basic") || t.includes("maintenance")) return "standard";
+  return "";
+}
 
-// -----------------------------
-// Checklists (single list per job type)
-// Deep is a combined, comprehensive set (standard + deep extras)
-// -----------------------------
+// Keyword fallback when no explicit type/service column
+function detectTypeFromText(title, notes) {
+  const joined = `${title || ""} ${notes || ""}`.toLowerCase();
+  if (joined.includes("airbnb") || joined.includes("turnover")) return "airbnb";
+  if (joined.includes("deep")) return "deep";
+  return "standard";
+}
+
+// ---------- checklists ----------
 const CHECKLISTS = {
   standard: {
     "Arrival / Safety": [
-      "Park legally; avoid blocking driveways/walkways",
-      "Announce arrival if occupied",
-      "Verify pets are secured per client notes",
-      "Gloves/PPE as needed; scan for hazards",
+      "Park legally; avoid blocking walkways/driveways",
+      "Announce arrival if occupied; PPE as needed",
+      "Verify pets secured per notes",
     ],
     "General — All Areas": [
-      "Pick up clutter; stage per photos",
+      "Stage per photos",
       "High dust (corners, vents, cobwebs)",
-      "Dust light fixtures & lamp shades",
+      "Dust fixtures & lamp shades",
       "Wipe doors/handles & switch plates",
-      "Dust baseboards & window sills",
-      "Clean interior glass & mirrors (streak-free)",
-      "Vacuum upholstery as needed",
+      "Baseboards & window sills dusted",
+      "Interior glass & mirrors streak-free",
       "Disinfect high-touch points",
-      "Empty interior trash; replace liners",
       "Vacuum carpets & rugs",
       "Sweep & mop hard floors",
     ],
     Bedrooms: [
-      "Strip/make beds (linens provided or stage as noted)",
-      "Inspect mattress protector",
+      "Strip/make beds per notes (fresh if provided)",
       "Dust tops, lamps, decor",
       "Mirrors streak-free",
       "Closet fronts wiped; floor vacuumed",
-      "Under bed vacuumed (visible area)",
-      "Trash emptied; floor vacuumed/mopped",
+      "Under bed (visible area) vacuumed",
+      "Trash emptied; floor finished",
     ],
     Bathrooms: [
-      "Empty trash; replace liner",
-      "Dust light fixtures & vent",
-      "Clean mirrors (streak-free)",
-      "Disinfect sink & faucet (polish)",
+      "Trash emptied; liner replaced",
+      "Lights & vent dusted",
+      "Mirrors streak-free",
+      "Sink & faucet disinfected; polish",
       "Counters & splash areas wiped",
-      "Scrub shower/tub; fixtures wiped",
+      "Shower/tub scrubbed; fixtures wiped",
       "Toilet bowl/seat/lid/base disinfected",
       "Behind toilet & baseboards wiped",
-      "Refill hand soap & restock TP",
-      "Fresh towels staged per policy",
-      "Sweep & mop floor (corners/behind door)",
+      "Refill soap; restock TP",
+      "Sweep & mop (corners/behind door)",
     ],
     Kitchen: [
-      "Load/hand-wash dishes; run dishwasher if full",
+      "Dishes handled; run DW if full",
       "Sink/faucet cleaned & polished",
-      "Stove top/knobs/control panel degreased",
-      "Microwave inside & outside wiped",
-      "Fridge exterior wiped (handles, sides if exposed)",
-      "Dishwasher front & control panel wiped",
-      "Small appliances wiped (coffee, toaster)",
-      "Backsplash/counters wiped (move items, wipe under)",
-      "Fronts of cabinets spot-cleaned",
-      "Organize counters per staging",
+      "Stovetop/knobs/control panel degreased",
+      "Microwave in/out wiped",
+      "Fridge exterior wiped (handles/sides exposed)",
+      "DW front & panel wiped",
+      "Small appliances wiped",
+      "Backsplash & counters wiped (move/replace items)",
+      "Cabinet fronts spot-cleaned",
       "Sweep & mop kitchen floor",
       "Trash/recycle emptied; liners replaced",
     ],
-    "Windows / Glass (interior)": [
-      "Spot-clean fingerprints & smudges",
-      "Sliding door glass (inside) top-to-bottom",
-      "Interior sills & tracks (visible debris)",
-    ],
-    "Final Walk & Lockup": [
-      "Lights set per policy",
-      "All faucets off; toilets flushed & lids down",
-      "Windows/doors locked; blinds staged",
+    "Final Walk": [
+      "Lights & blinds per policy",
+      "Faucets off; toilets lids down",
+      "Windows/doors locked",
       "Thermostat per policy",
-      "All trash removed; liners in place",
       "Take required ‘after’ photos (3 angles/room)",
     ],
   },
 
   airbnb: {
     "Arrival / Safety": [
-      "Park legally; avoid blocking driveways/walkways",
-      "Announce arrival if occupied",
-      "Verify pets are secured per client notes",
-      "Gloves/PPE as needed; scan for hazards",
-      "Open blinds/ventilate if needed",
+      "Park legally; avoid blocking walkways/driveways",
+      "Announce arrival if occupied; PPE as needed",
+      "Verify pets secured per notes; ventilate if needed",
     ],
     "General — All Areas": [
-      "Stage per property photos",
+      "Stage per listing photos",
       "High dust (corners, vents, cobwebs)",
       "Dust fixtures & lamp shades",
       "Wipe doors/handles & switch plates",
-      "Dust baseboards & window sills",
-      "Clean interior glass & mirrors (streak-free)",
-      "Vacuum upholstery (under cushions if needed)",
+      "Baseboards & window sills dusted",
+      "Interior glass & mirrors streak-free",
       "Disinfect high-touch points",
-      "Vacuum carpets & rugs",
-      "Sweep & mop hard floors",
+      "Vacuum upholstery if needed (under cushions if soiled)",
+      "Vacuum carpets; sweep & mop hard floors",
     ],
     Bedrooms: [
-      "Strip beds & replace with fresh linens",
+      "Strip beds; remake with fresh linens",
       "Inspect mattress protector; change if needed",
-      "Make beds hotel-style; pillows staged",
-      "Dust tops, lamps, decor",
-      "Mirrors streak-free",
+      "Hotel corners; pillows staged",
+      "Dust tops, lamps, decor; mirrors clean",
       "Closet fronts wiped; floor vacuumed",
-      "Under bed vacuumed (visible area)",
-      "Trash emptied; floor vacuumed/mopped",
+      "Under bed visible area vacuumed",
+      "Trash emptied; floor finished",
     ],
     Bathrooms: [
-      "Empty trash; replace liner",
-      "Dust light fixtures & vent",
-      "Clean mirrors & glass shelves",
-      "Disinfect sink & faucet; polish",
+      "Trash emptied; liner replaced",
+      "Lights & vent dusted",
+      "Mirrors & glass shelves streak-free",
+      "Sink/faucet disinfected; polish",
       "Counters & splash areas wiped",
-      "Scrub shower/tub & remove soap scum",
-      "Shower glass & door tracks detailed",
-      "Toilet bowl/seat/lid/base disinfected",
+      "Shower/tub scrubbed; remove soap scum",
+      "Glass & door tracks detailed",
+      "Toilet full disinfect (bowl/seat/lid/base)",
       "Behind toilet & baseboards wiped",
-      "Refill hand soap & restock TP (2 extra)",
-      "Fresh towels per staging (face/hand/bath)",
-      "Sweep & mop floor (corners/behind door)",
+      "Refill soap; restock TP (2 extra)",
+      "Hang fresh towels per staging",
+      "Sweep & mop (corners/behind door)",
     ],
     Kitchen: [
-      "Load/hand-wash dishes; run dishwasher",
-      "Sink/faucet cleaned & polished",
-      "Stove top/knobs/control panel degreased",
-      "Microwave inside & outside wiped",
-      "Fridge exterior wiped; spot-clean interior if needed",
-      "Dishwasher front & control panel wiped",
-      "Small appliances wiped (coffee, toaster, kettle)",
-      "Backsplash/counters wiped (move items, wipe under)",
-      "Fronts of cabinets spot-cleaned",
-      "Restock: coffee/filters/tea as provided",
-      "Sweep & mop kitchen floor",
+      "Dishes handled; run DW",
+      "Sink/faucet polished",
+      "Stovetop/knobs/control panel degreased",
+      "Microwave in/out wiped",
+      "Fridge exterior wiped; spot interior if needed",
+      "DW front & panel wiped",
+      "Small appliances wiped (coffee/toaster/kettle)",
+      "Backsplash & counters wiped (move/replace items)",
+      "Cabinet fronts spot-cleaned",
+      "Restock consumables per host list",
+      "Sweep & mop floor",
       "Trash/recycle emptied; liners replaced",
     ],
-    "Supplies & Turnover": [
-      "Restock consumables per checklist",
+    "Turnover / Supplies": [
+      "Restock consumables & hospitality items",
       "Inventory towels/sheets; stage per count",
       "Note low/out items in supplies log",
     ],
-    "Trash / Recycle Days": [
-      "Check local pickup days",
-      "Set cans to curb (night before); return after pickup",
-      "Wipe bin lids/handles if soiled",
-    ],
-    "Damage / Lost & Found": [
-      "Photograph & log any damage",
-      "Bag & label left-behind items",
-      "Place L&F in owner closet",
-    ],
-    "Final Walk & Lockup": [
+    "Final Walk": [
       "Lights & blinds per policy",
-      "All faucets off; toilets lids down",
+      "Faucets off; toilets lids down",
       "Windows/doors locked",
       "Thermostat set per policy",
-      "All trash removed",
-      "Take required photos (3 angles/room, before/after)",
+      "Take required photos (3 angles/room, before & after)",
     ],
   },
 
-  // Deep = comprehensive (includes standard + extras) but still one list
   deep: {
     "Arrival / Safety": [
-      "Park legally; avoid blocking driveways/walkways",
-      "Announce arrival if occupied",
-      "Verify pets are secured per client notes",
-      "Gloves/PPE as needed; scan for hazards",
+      "Park legally; avoid blocking walkways/driveways",
+      "Announce arrival if occupied; PPE as needed",
     ],
-    "General — All Areas (Deep)": [
+    "All Areas — Deep": [
       "Stage per photos",
-      "Ceiling corners, vents, cobwebs thoroughly",
-      "Dust fixtures, trim, baseboards (detailed)",
-      "Doors (tops/edges), switch plates detail wipe",
+      "Ceiling corners/vents/cobwebs thoroughly",
+      "Fixtures/trim/baseboards detailed",
+      "Doors (tops/edges), switches detailed",
       "Interior glass & mirrors streak-free",
       "Move light furniture (safe) & clean underneath",
       "Vacuum under rugs; mop beneath if hard surface",
-      "Detail window tracks/sills",
+      "Window tracks/sills detailed",
       "Vacuum carpets; sweep/mop hard floors (edges)",
     ],
     Bedrooms: [
-      "Strip/make beds (linens/staging as noted)",
-      "Mattress protector check",
+      "Strip/make beds per notes (fresh if provided)",
       "Detailed dusting of tops/lamps/decor",
       "Mirrors streak-free",
-      "Closet fronts wiped; floor vacuumed",
-      "Under bed vacuumed (visible area)",
+      "Closet fronts wiped; floors done",
+      "Under bed visible area vacuumed",
       "Trash emptied; floors finished",
     ],
     Bathrooms: [
-      "Empty trash; replace liner",
-      "Dust light fixtures & vent cover (remove dust)",
-      "Mirrors & glass shelves streak-free",
-      "Disinfect sink & faucet; polish",
+      "Trash emptied; liner replaced",
+      "Lights & vent cover dusted (remove dust)",
+      "Mirrors/glass shelves streak-free",
+      "Sink/faucet disinfected; polish",
       "Detail counters, splash areas, grout edges",
       "Shower/tub walls & floor scrubbed (detail)",
-      "Descale shower glass (hard-water remover if needed)",
-      "Toilet bowl/seat/lid/base detailed",
-      "Behind toilet & baseboards detailed",
-      "Refill soap & restock TP",
-      "Floor swept & mopped thoroughly",
+      "Descale shower glass where needed",
+      "Toilet full disinfect + behind/baseboards",
+      "Refill soap; restock TP",
+      "Floor thoroughly swept & mopped",
     ],
     Kitchen: [
       "Dishes handled; sink/faucet polished",
-      "Stove top & knobs degreased; lift grates & clean beneath",
-      "MICROWAVE inside & outside detailed",
-      "OVEN interior detail (if assigned deep)",
-      "FRIDGE interior detail (shelves/bins) if assigned",
-      "Front grill/coil cover wiped",
-      "Cabinet doors & hardware full wipe-down",
-      "Backsplash grout edges detailed",
+      "Stovetop & under grates degreased",
+      "Microwave in/out detailed",
+      "Oven interior detail (if assigned)",
+      "Fridge interior detail (if assigned) + grill/coil cover",
+      "Cabinet doors/hardware full wipe-down",
+      "Backsplash grout/edges detailed",
       "Counters wiped (move/replace items)",
-      "Sweep & mop floor (edges & toe-kicks)",
+      "Sweep & mop floor (edges/toe-kicks)",
       "Trash/recycle emptied",
     ],
-    "Windows / Glass (interior)": [
-      "Fingerprints & smudges removed",
-      "Sliding door glass (inside) top-to-bottom",
-      "Interior sills & tracks detailed",
-    ],
-    "Final Walk & Lockup": [
-      "Lights set per policy",
-      "All faucets off; toilets flushed & lids down",
-      "Windows/doors locked; blinds staged",
-      "Thermostat set per policy",
-      "All trash removed; liners in place",
+    "Final Walk": [
+      "Lights/blinds per policy; faucets off; lids down",
+      "Windows/doors locked; thermostat per policy",
       "Take required ‘after’ photos (3 angles/room)",
     ],
   },
 };
 
-// -----------------------------
-// Cleaner Portal
-// -----------------------------
+// ---------- Cleaner ----------
 function CleanerView() {
-  const [jobs, setJobs] = useState([]);
   const [filter, setFilter] = useState("today"); // today | week | all
-  const [open, setOpen] = useState({}); // { [jobId]: true }
-  const [checked, setChecked] = useState({}); // { [jobId]: { [section]: { [task]: true } } }
+  const [jobs, setJobs] = useState([]);
+  const [open, setOpen] = useState({});
+  const [checked, setChecked] = useState({});
   const [clockIn, setClockIn] = useState(null);
-  const [files, setFiles] = useState({}); // { [jobId]: { before: FileList, after: FileList } }
+  const [files, setFiles] = useState({});
   const [cleanerName, setCleanerName] = useState("");
 
-  // Load jobs from /api/jobs
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/jobs", { cache: "no-store" });
         const data = await res.json();
 
-        const events = (data?.events || []).map((e) => ({
-          id: `${e.date}-${(e.client || "").replace(/\s+/g, "_")}-${(e.title || "Clean").replace(/\s+/g, "_")}`,
-          date: norm(e.date),
-          start: norm(e.start),
-          end: norm(e.end),
-          title: norm(e.title),
-          client: norm(e.client),
-          address: norm(e.address),
-          notes: norm(e.notes),
-          client_phone: norm(e.client_phone),
-          job_id: norm(e.job_id),
-          type: detectType(e.title),
-        }));
+        const events = (data?.events || []).map((e) => {
+          // pull from multiple possible column names
+          const address =
+            norm(e.address) ||
+            norm(e.Address) ||
+            norm(e.location) ||
+            norm(e.Location) ||
+            norm(e.addr) ||
+            "";
 
-        // Filter based on pill
+          // prefer explicit type/service; fallback to keywords
+          const explicit = normalizeType(e.type || e.service);
+          const finalType = explicit || detectTypeFromText(e.title, e.notes);
+
+          const titleText =
+            norm(e.title) ||
+            (finalType === "airbnb" ? "Airbnb turnover" : finalType === "deep" ? "Deep clean" : "Standard clean");
+
+          return {
+            id: `${norm(e.date)}-${norm(e.client).replace(/\s+/g, "_")}-${titleText.replace(/\s+/g, "_")}`,
+            date: norm(e.date),
+            start: norm(e.start),
+            end: norm(e.end),
+            title: titleText,
+            client: norm(e.client),
+            address,
+            notes: norm(e.notes),
+            client_phone: norm(e.client_phone),
+            job_id: norm(e.job_id),
+            type: finalType || "standard",
+          };
+        });
+
+        // filter
         const t = todayISO();
         const filtered = events.filter((j) => {
           if (filter === "today") return j.date === t;
           if (filter === "week") return withinWeek(j.date);
-          return true; // all
+          return true;
         });
 
-        // sort by date/time
         filtered.sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
         setJobs(filtered);
       } catch (err) {
@@ -338,12 +318,10 @@ function CleanerView() {
     if (!list) return out;
     for (const file of Array.from(list)) {
       const key = `${jobId}/${which}/${Date.now()}_${file.name}`;
-      const { error: upErr } = await supabase.storage.from("photos").upload(key, file, { upsert: true });
-      if (!upErr) {
-        const {
-          data: { publicUrl },
-        } = supabase.storage.from("photos").getPublicUrl(key);
-        out.push(publicUrl);
+      const { error } = await supabase.storage.from("photos").upload(key, file, { upsert: true });
+      if (!error) {
+        const { data: u } = supabase.storage.from("photos").getPublicUrl(key);
+        out.push(u.publicUrl);
       }
     }
     return out;
@@ -353,7 +331,6 @@ function CleanerView() {
     try {
       const beforeUrls = await uploadList(job.id, "before", files[job.id]?.before);
       const afterUrls = await uploadList(job.id, "after", files[job.id]?.after);
-
       const payload = {
         job_key: job.id,
         job_date: job.date,
@@ -367,9 +344,8 @@ function CleanerView() {
         photos_after: afterUrls,
         cleaner_name: cleanerName || "MOR Cleaner",
       };
-
-      const { error: insErr } = await supabase.from("completions").insert(payload);
-      if (insErr) throw insErr;
+      const { error } = await supabase.from("completions").insert(payload);
+      if (error) throw error;
       alert("Job saved as completed ✅");
       setOpen((o) => ({ ...o, [job.id]: false }));
     } catch (e) {
@@ -380,7 +356,7 @@ function CleanerView() {
 
   return (
     <div className="space-y-6">
-      {/* Top bar */}
+      {/* Shift / date */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="p-5 rounded-2xl bg-emerald-50 shadow-sm border">
           <div className="flex items-center gap-3">
@@ -389,10 +365,7 @@ function CleanerView() {
           </div>
           <div className="mt-3 flex items-center gap-3">
             {!clockIn ? (
-              <button
-                onClick={() => setClockIn(Date.now())}
-                className="px-4 py-2 rounded-xl bg-emerald-600 text-white flex items-center gap-2"
-              >
+              <button onClick={() => setClockIn(Date.now())} className="px-4 py-2 rounded-xl bg-emerald-600 text-white flex items-center gap-2">
                 <LogIn className="w-4 h-4" /> Clock In
               </button>
             ) : (
@@ -400,10 +373,7 @@ function CleanerView() {
                 <span className="text-sm">
                   Clocked in at <strong>{fmtTime(clockIn)}</strong>
                 </span>
-                <button
-                  onClick={() => setClockIn(null)}
-                  className="px-4 py-2 rounded-xl bg-rose-600 text-white flex items-center gap-2"
-                >
+                <button onClick={() => setClockIn(null)} className="px-4 py-2 rounded-xl bg-rose-600 text-white flex items-center gap-2">
                   <LogOut className="w-4 h-4" /> Clock Out
                 </button>
               </>
@@ -417,8 +387,6 @@ function CleanerView() {
             <h3 className="font-semibold text-slate-800">Jobs</h3>
           </div>
           <p className="text-sm text-slate-500 mt-1">{todayISO()}</p>
-
-          {/* Filter pills */}
           <div className="mt-3 flex gap-2">
             {[
               { k: "today", label: "Today" },
@@ -428,9 +396,7 @@ function CleanerView() {
               <button
                 key={k}
                 onClick={() => setFilter(k)}
-                className={`px-3 py-1 rounded-full text-sm border ${
-                  filter === k ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-700"
-                }`}
+                className={`px-3 py-1 rounded-full text-sm border ${filter === k ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-700"}`}
               >
                 {label}
               </button>
@@ -453,7 +419,7 @@ function CleanerView() {
         </label>
       </div>
 
-      {/* Jobs list */}
+      {/* Jobs */}
       {!jobs.length ? (
         <p className="text-sm text-slate-500">No jobs found for this filter.</p>
       ) : (
@@ -462,22 +428,12 @@ function CleanerView() {
             const list = CHECKLISTS[job.type] || CHECKLISTS.standard;
             const isOpen = !!open[job.id];
             return (
-              <motion.div
-                key={job.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="rounded-2xl border p-4 bg-white shadow-sm"
-              >
-                {/* collapsed row header */}
-                <button
-                  className="w-full text-left"
-                  onClick={() => toggleOpen(job.id)}
-                  type="button"
-                >
+              <motion.div key={job.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border p-4 bg-white shadow-sm">
+                <button className="w-full text-left" onClick={() => setOpen((p) => ({ ...p, [job.id]: !p[job.id] }))} type="button">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">
-                        {job.type === "standard" ? "Standard clean" : job.type === "airbnb" ? "Airbnb turnover" : "Deep clean"}
+                        {job.type === "airbnb" ? "Airbnb turnover" : job.type === "deep" ? "Deep clean" : "Standard clean"}
                       </div>
                       <h4 className="text-base font-semibold text-slate-900">{job.client}</h4>
                       {job.address && (
@@ -498,7 +454,6 @@ function CleanerView() {
                   </div>
                 </button>
 
-                {/* expanded content */}
                 {isOpen && (
                   <div className="pt-4">
                     {/* Checklist */}
@@ -537,13 +492,7 @@ function CleanerView() {
                         <label className="mt-2 flex items-center gap-2 text-sm cursor-pointer">
                           <Camera className="w-4 h-4 text-slate-600" />
                           <span>Upload images</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            className="hidden"
-                            onChange={(e) => onFiles(job.id, "before", e.target.files)}
-                          />
+                          <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => onFiles(job.id, "before", e.target.files)} />
                         </label>
                       </div>
                       <div className="rounded-xl border p-4 bg-slate-50">
@@ -553,28 +502,16 @@ function CleanerView() {
                         <label className="mt-2 flex items-center gap-2 text-sm cursor-pointer">
                           <Camera className="w-4 h-4 text-slate-600" />
                           <span>Upload images</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            className="hidden"
-                            onChange={(e) => onFiles(job.id, "after", e.target.files)}
-                          />
+                          <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => onFiles(job.id, "after", e.target.files)} />
                         </label>
                       </div>
                     </div>
 
                     <div className="mt-4 flex flex-wrap gap-3">
-                      <button
-                        onClick={() => completeJob(job)}
-                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm flex items-center gap-2"
-                      >
+                      <button onClick={() => completeJob(job)} className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm flex items-center gap-2">
                         <Check className="w-4 h-4" /> Mark Complete
                       </button>
-                      <button
-                        onClick={() => toggleOpen(job.id)}
-                        className="px-4 py-2 rounded-xl bg-white text-slate-700 border text-sm flex items-center gap-2"
-                      >
+                      <button onClick={() => toggleOpen(job.id)} className="px-4 py-2 rounded-xl bg-white text-slate-700 border text-sm flex items-center gap-2">
                         <X className="w-4 h-4" /> Close
                       </button>
                     </div>
@@ -589,9 +526,7 @@ function CleanerView() {
   );
 }
 
-// -----------------------------
-// Customer Portal
-// -----------------------------
+// ---------- Customer ----------
 function CustomerView() {
   const [phone, setPhone] = useState("");
   const [authed, setAuthed] = useState(false);
@@ -599,36 +534,23 @@ function CustomerView() {
   const [history, setHistory] = useState([]);
 
   async function loadForPhone(p) {
-    // load upcoming from your /api/jobs and filter by client_phone
     try {
       const res = await fetch("/api/jobs", { cache: "no-store" });
       const data = await res.json();
-      const events = (data?.events || []).filter(
-        (e) => (e.client_phone || "").replace(/\D/g, "") === p.replace(/\D/g, "")
-      );
-      // sort
-      events.sort(
-        (a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || "")
-      );
-      setUpcoming(events);
-    } catch (e) {
-      console.error(e);
+      const events = (data?.events || []).map((e) => ({
+        ...e,
+        address: norm(e.address) || norm(e.Address) || norm(e.location) || norm(e.Location) || norm(e.addr) || "",
+      }));
+      const mine = events.filter((e) => (e.client_phone || "").replace(/\D/g, "") === p.replace(/\D/g, ""));
+      mine.sort((a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || ""));
+      setUpcoming(mine);
+    } catch {
       setUpcoming([]);
     }
 
-    // load completed from Supabase and filter by phone
-    const { data: comps, error } = await supabase
-      .from("completions")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (!error) {
-      const mine = (comps || []).filter(
-        (c) => (c.client_phone || "").replace(/\D/g, "") === p.replace(/\D/g, "")
-      );
-      setHistory(mine);
-    } else {
-      setHistory([]);
-    }
+    const { data: comps } = await supabase.from("completions").select("*").order("created_at", { ascending: false });
+    const mineC = (comps || []).filter((c) => (c.client_phone || "").replace(/\D/g, "") === p.replace(/\D/g, ""));
+    setHistory(mineC);
   }
 
   const onSubmit = async (e) => {
@@ -642,21 +564,13 @@ function CustomerView() {
     return (
       <div className="max-w-md mx-auto p-6 rounded-2xl bg-white border shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900 mb-1">View your cleans</h3>
-        <p className="text-sm text-slate-600 mb-4">
-          Enter the phone number on your account to view upcoming appointments and your photo
-          gallery.
-        </p>
+        <p className="text-sm text-slate-600 mb-4">Enter the phone number on your account to view upcoming appointments and your photo gallery.</p>
         <form onSubmit={onSubmit} className="grid gap-3">
           <label className="text-sm text-slate-700 flex items-center gap-2">
             <Phone className="w-4 h-4" />
             Phone number
           </label>
-          <input
-            className="px-3 py-2 rounded-xl border"
-            placeholder="e.g., 386-555-1212"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-          />
+          <input className="px-3 py-2 rounded-xl border" placeholder="e.g., 386-555-1212" value={phone} onChange={(e) => setPhone(e.target.value)} />
           <button className="mt-2 px-4 py-2 rounded-xl bg-emerald-600 text-white">Continue</button>
         </form>
       </div>
@@ -674,11 +588,15 @@ function CustomerView() {
             {upcoming.map((j) => (
               <div key={`${j.date}-${j.client}-${j.title}`} className="border rounded-xl p-3">
                 <div className="text-xs uppercase tracking-wide text-slate-500">
-                  {detectType(j.title) === "standard"
-                    ? "Standard clean"
-                    : detectType(j.title) === "airbnb"
+                  {normalizeType(j.type || j.service) === "airbnb"
                     ? "Airbnb turnover"
-                    : "Deep clean"}
+                    : normalizeType(j.type || j.service) === "deep"
+                    ? "Deep clean"
+                    : detectTypeFromText(j.title, j.notes) === "airbnb"
+                    ? "Airbnb turnover"
+                    : detectTypeFromText(j.title, j.notes) === "deep"
+                    ? "Deep clean"
+                    : "Standard clean"}
                 </div>
                 <div className="font-medium">{j.client}</div>
                 {j.address && <div className="text-sm text-slate-600">{j.address}</div>}
@@ -702,11 +620,7 @@ function CustomerView() {
             {history.map((c) => (
               <div key={c.id} className="border rounded-xl p-3">
                 <div className="text-xs uppercase tracking-wide text-slate-500">
-                  {c.job_type === "standard"
-                    ? "Standard clean"
-                    : c.job_type === "airbnb"
-                    ? "Airbnb turnover"
-                    : "Deep clean"}
+                  {c.job_type === "airbnb" ? "Airbnb turnover" : c.job_type === "deep" ? "Deep clean" : "Standard clean"}
                 </div>
                 <div className="font-medium">{c.client}</div>
                 {c.address && <div className="text-sm text-slate-600">{c.address}</div>}
@@ -714,7 +628,6 @@ function CustomerView() {
                   Cleaner: <strong>{c.cleaner_name || "MOR Cleaner"}</strong>
                 </div>
 
-                {/* Galleries */}
                 <div className="mt-3 grid sm:grid-cols-2 gap-3">
                   <div>
                     <div className="text-sm font-medium mb-1">Before</div>
@@ -736,9 +649,7 @@ function CustomerView() {
 
                 {c.checklist && (
                   <details className="mt-3">
-                    <summary className="cursor-pointer text-sm text-emerald-700">
-                      View checked items
-                    </summary>
+                    <summary className="cursor-pointer text-sm text-emerald-700">View checked items</summary>
                     <div className="mt-2 text-sm text-slate-700">
                       {Object.entries(c.checklist).map(([section, tasks]) => (
                         <div key={section} className="mb-2">
@@ -764,17 +675,14 @@ function CustomerView() {
   );
 }
 
-// -----------------------------
-// Main App Shell
-// -----------------------------
+// ---------- App shell ----------
 export default function App() {
-  const [tab, setTab] = useState("cleaner"); // cleaner | customer
+  const [tab, setTab] = useState("cleaner");
   return (
     <div className="min-h-screen bg-gradient-to-b from-emerald-50 to-white text-slate-800">
       <header className="px-5 py-6 border-b bg-white/90 backdrop-blur">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {/* Put logo.png in /public */}
             <img src="/logo.png" alt="MOR Clean" className="w-10 h-10 rounded-xl object-contain" />
             <div>
               <h1 className="text-xl font-bold tracking-tight text-emerald-900">M.O.R. Clean Daytona</h1>
@@ -789,9 +697,7 @@ export default function App() {
               <button
                 key={k}
                 onClick={() => setTab(k)}
-                className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
-                  tab === k ? "bg-emerald-600 text-white" : "text-slate-700 hover:bg-slate-50"
-                }`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition ${tab === k ? "bg-emerald-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
               >
                 {label}
               </button>
@@ -803,13 +709,11 @@ export default function App() {
       <main className="px-5 pb-16">
         <div className="max-w-5xl mx-auto grid gap-6">
           <section className="rounded-3xl bg-white border shadow-sm p-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-1">
-              {tab === "cleaner" ? "Cleaner Portal" : "Customer Portal"}
-            </h2>
+            <h2 className="text-lg font-semibold text-slate-900 mb-1">{tab === "cleaner" ? "Cleaner Portal" : "Customer Portal"}</h2>
             <p className="text-sm text-slate-500 mb-6">
               {tab === "cleaner"
-                ? "Clock in, view jobs, complete one checklist per job type, and upload before/after photos."
-                : "Login with your phone number to view your upcoming appointments and photo history."}
+                ? "View jobs, run the correct checklist per job type, and upload before/after photos."
+                : "Login with your phone number to view only your upcoming appointments and photo history."}
             </p>
             {tab === "cleaner" ? <CleanerView /> : <CustomerView />}
           </section>
@@ -824,9 +728,7 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="text-center text-xs text-slate-500 py-6">
-        © {new Date().getFullYear()} MOR – A Clean Living Company
-      </footer>
+      <footer className="text-center text-xs text-slate-500 py-6">© {new Date().getFullYear()} MOR – A Clean Living Company</footer>
     </div>
   );
 }
