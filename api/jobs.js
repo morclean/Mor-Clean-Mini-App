@@ -1,7 +1,7 @@
 // api/jobs.js
 // Vercel Serverless Function that reads your published Google Sheet (CSV) and returns JSON for the app.
 
-const PUBLISHED_CSV_URL = "https://docs.google.com/spreadsheets/d/1jms4Z8H1p9_FPcTL7kDnUsskqnflZ5gY5j3mSgzKxXo/edit?gid=1976931574#gid=1976931574"; // <= paste your Google Sheet "Publish to web" CSV link here
+const PUBLISHED_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv"; // <= paste your Google Sheet "Publish to web" CSV link here
 const DAYS_AHEAD = 60; // how far forward to show jobs
 const DAYS_PAST  = 0;  // how far back to include (0 = only today+)
 
