@@ -1,180 +1,290 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Check, Clock, Camera, Calendar, MapPin, LogIn, LogOut,
+  ChevronDown, ChevronRight, Search
+} from "lucide-react";
+import { MASTER_CHECKLIST } from "./lib/checklist";
 
-// with Vite, files in /public are available at the root url:
-const logoUrl = "/logo.png";
+// ---------- tiny helpers ----------
+const isoToday = () => new Date().toISOString().slice(0,10);
+const startOfWeek = () => {
+  const d = new Date(); const day = d.getDay(); const diff = d.getDate()-day+(day===0?-6:1);
+  return new Date(d.setDate(diff)).toISOString().slice(0,10);
+};
+const endOfWeek = () => { const d = new Date(startOfWeek()); d.setDate(d.getDate()+6); return d.toISOString().slice(0,10); };
+const fmtDate = (iso) => new Date(iso).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"});
 
-// tiny helpers
-const toLocalTime = (t) =>
-  t ? new Date(`1970-01-01T${t}:00`).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const jobId = (j) => `${j.date}-${(j.client||"").slice(0,40)}-${(j.title||"Clean").slice(0,40)}`;
 
-export default function App() {
+// ---------- CLEANER ----------
+function CleanerView() {
   const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [jobOpen, setJobOpen] = useState({});       // <— job-level accordion
+  const [roomOpen, setRoomOpen] = useState({});
+  const [checked, setChecked] = useState({});
+  const [files, setFiles] = useState({});
+  const [done, setDone] = useState({});
   const [clockIn, setClockIn] = useState(null);
-  const [expanded, setExpanded] = useState({}); // jobId -> boolean
-  const [filter, setFilter] = useState("today"); // "today" | "week" | "all"
-  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState("today");
+  const [query, setQuery] = useState("");
 
+  // load jobs from /api/jobs
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/jobs", { cache: "no-store" });
-        const data = await res.json();
-        // Normalize a bit so UI is stable
-        const normalized = (Array.isArray(data) ? data : data?.events || []).map((j, i) => ({
-          id:
-            j.id ||
-            `${j.date || ""}_${(j.client || "").replace(/\s+/g, "_")}_${(j.title || "Clean").replace(/\s+/g, "_")}_${i}`,
-          date: j.date || "",
-          start: j.start || "",
-          end: j.end || "",
-          title: j.title || "Clean",
-          client: j.client || "",
-          address: j.address || "",
-          notes: j.notes || "",
-          service_type: j.service_type || j.title || "Clean",
+        const { events = [] } = await res.json();
+
+        const mapped = events.map((e) => ({
+          id: jobId(e),
+          date: e.date,
+          start: e.start || "",
+          end: e.end || "",
+          title: e.title || "Clean",
+          client: e.client || "",
+          address: e.address || "",
+          notes: e.notes || "",
         }));
-        setJobs(normalized);
+
+        const today = isoToday();
+        const in30 = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
+
+        const upcoming = mapped
+          .filter(j => j.date >= today && j.date <= in30)
+          .sort((a,b) => a.date.localeCompare(b.date) || (a.start||"").localeCompare(b.start||""));
+
+        // defaults: job collapsed, rooms collapsed
+        const jo = {}; const ro = {};
+        for (const j of upcoming) {
+          jo[j.id] = false;
+          ro[j.id] = Object.fromEntries(Object.keys(MASTER_CHECKLIST).map(r => [r, false]));
+        }
+
+        setJobs(upcoming);
+        setJobOpen(jo);
+        setRoomOpen(ro);
       } catch (e) {
         console.error(e);
         setJobs([]);
-      } finally {
-        setLoading(false);
       }
     })();
   }, []);
 
-  // filters
-  const filtered = useMemo(() => {
-    const t = todayISO();
-    const weekFromToday = new Date();
-    weekFromToday.setDate(weekFromToday.getDate() + 7);
-    const weekMax = weekFromToday.toISOString().slice(0, 10);
+  const visible = useMemo(() => {
+    let list = [...jobs];
+    if (filter === "today") list = list.filter(j => j.date === isoToday());
+    if (filter === "week")  list = list.filter(j => j.date >= startOfWeek() && j.date <= endOfWeek());
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      list = list.filter(j =>
+        (j.title||"").toLowerCase().includes(q) ||
+        (j.client||"").toLowerCase().includes(q) ||
+        (j.address||"").toLowerCase().includes(q) ||
+        (j.notes||"").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [jobs, filter, query]);
 
-    return jobs
-      .filter((j) => {
-        if (filter === "today") return j.date === t;
-        if (filter === "week") return j.date >= t && j.date <= weekMax;
-        return true; // all
-      })
-      .filter((j) => {
-        const hay = `${j.client} ${j.title} ${j.address} ${j.notes}`.toLowerCase();
-        return hay.includes(q.toLowerCase());
-      })
-      .sort((a, b) => a.date.localeCompare(b.date) || (a.start || "").localeCompare(b.start || ""));
-  }, [jobs, filter, q]);
+  const toggleJob = (id) =>
+    setJobOpen(prev => ({ ...prev, [id]: !prev[id] }));
 
-  const toggle = (id) => setExpanded((m) => ({ ...m, [id]: !m[id] }));
+  const toggleRoom = (jid, room) =>
+    setRoomOpen(prev => ({ ...prev, [jid]: { ...prev[jid], [room]: !prev[jid]?.[room] } }));
+
+  const toggleTask = (jid, room, task) =>
+    setChecked(prev => {
+      const next = structuredClone(prev);
+      if (!next[jid]) next[jid] = {};
+      if (!next[jid][room]) next[jid][room] = {};
+      next[jid][room][task] = !next[jid][room][task];
+      return next;
+    });
+
+  const onFiles = (jid, list) => setFiles(p => ({ ...p, [jid]: list }));
+
+  const completeJob = async (job) => {
+    // Placeholder; wire to Supabase later
+    console.log("Complete job", job, checked[job.id], files[job.id]);
+    setDone(d => ({ ...d, [job.id]: true }));
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="flex items-center justify-between bg-white shadow p-4">
-        <div className="flex items-center gap-3">
-          <img src={logoUrl} alt="MOR Clean Logo" className="h-10 w-10 rounded-full" />
-          <h1 className="text-xl font-bold text-gray-800">M.O.R. Clean Daytona</h1>
+    <div className="space-y-6">
+      {/* Filters + search */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="p-5 rounded-2xl bg-emerald-50 border">
+          <div className="flex items-center gap-3">
+            <Clock className="w-5 h-5 text-emerald-700" />
+            <h3 className="font-semibold">Shift</h3>
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            {!clockIn ? (
+              <button onClick={() => setClockIn(Date.now())} className="px-4 py-2 rounded-xl bg-emerald-600 text-white flex items-center gap-2">
+                <LogIn className="w-4 h-4" /> Clock In
+              </button>
+            ) : (
+              <>
+                <span className="text-sm">
+                  Clocked in at{" "}
+                  <strong>{new Date(clockIn).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</strong>
+                </span>
+                <button onClick={() => setClockIn(null)} className="px-4 py-2 rounded-xl bg-rose-600 text-white flex items-center gap-2">
+                  <LogOut className="w-4 h-4" /> Clock Out
+                </button>
+              </>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-4">
-          {!clockIn ? (
-            <button
-              className="px-3 py-1 bg-emerald-600 text-white rounded"
-              onClick={() => setClockIn(Date.now())}
-            >
-              Clock In
-            </button>
-          ) : (
-            <span className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded">
-              Clocked in at{" "}
-              {new Date(clockIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </span>
-          )}
-          <span className="text-gray-600">Today: {new Date().toLocaleDateString()}</span>
-        </div>
-      </header>
 
-      {/* Controls */}
-      <div className="max-w-5xl mx-auto px-4 pt-6">
-        <div className="flex flex-wrap items-center gap-2">
-          {["today", "week", "all"].map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-3 py-1 rounded-full border text-sm ${
-                filter === f ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-gray-700"
-              }`}
-            >
-              {f === "today" ? "Today" : f === "week" ? "This Week" : "All"}
-            </button>
-          ))}
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search client, address, notes…"
-            className="ml-auto w-full sm:w-72 px-3 py-2 border rounded"
-          />
+        <div className="p-5 rounded-2xl bg-white border">
+          <div className="flex items-center justify-between">
+            <div className="flex gap-2">
+              {["today","week","all"].map(k => (
+                <button key={k} onClick={() => setFilter(k)}
+                  className={`px-3 py-1.5 rounded-full text-sm border ${filter===k ? "bg-emerald-600 text-white border-emerald-600":"bg-white"}`}>
+                  {k==="today"?"Today":k==="week"?"This Week":"All"}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-2 top-2.5 text-slate-400" />
+              <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search client, address, notes…"
+                     className="pl-8 pr-3 py-2 rounded-lg border text-sm w-56" />
+            </div>
+          </div>
+          <p className="text-xs text-slate-500 mt-2">v9 • {isoToday()}</p>
         </div>
       </div>
 
-      {/* Job list */}
-      <main className="max-w-5xl mx-auto px-4 pb-10">
-        <h2 className="text-lg font-semibold mt-6 mb-3">Assigned Jobs</h2>
+      {/* Jobs */}
+      <div className="grid gap-5">
+        {visible.length === 0 && <p className="text-sm text-slate-500">No jobs.</p>}
 
-        {loading ? (
-          <p className="text-gray-500">Loading jobs…</p>
-        ) : filtered.length === 0 ? (
-          <p className="text-gray-500">No jobs found for this view.</p>
-        ) : (
-          <ul className="space-y-3">
-            {filtered.map((j) => {
-              const open = !!expanded[j.id];
-              return (
-                <li key={j.id} className="bg-white border rounded-lg shadow-sm">
-                  {/* Card header (always visible) */}
-                  <button
-                    onClick={() => toggle(j.id)}
-                    className="w-full flex items-start justify-between gap-3 p-4 text-left"
-                  >
-                    <div>
-                      <div className="text-sm text-gray-500">
-                        {j.date || "—"} • {toLocalTime(j.start)}{j.end ? `–${toLocalTime(j.end)}` : ""}
-                      </div>
-                      <div className="font-semibold text-gray-900">
-                        {j.title || j.service_type || "Clean"} • {j.client || "Unnamed"}
-                      </div>
-                      {/* subtle service line under title */}
-                      <div className="text-xs text-gray-500 truncate">
-                        {j.service_type || ""}
-                      </div>
+        {visible.map(job => {
+          const open = !!jobOpen[job.id];
+          const rooms = roomOpen[job.id] || {};
+          return (
+            <motion.div key={job.id} initial={{opacity:0,y:10}} animate={{opacity:1,y:0}}
+              className={`rounded-2xl border p-5 shadow-sm ${done[job.id]?"bg-emerald-50":"bg-white"}`}>
+              {/* Header row (NO internal ID shown) */}
+              <button onClick={() => toggleJob(job.id)} className="w-full text-left">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h4 className="text-lg font-semibold text-slate-800">
+                      {job.title || "Cleaning"} • <span className="text-emerald-900">{job.client}</span>
+                    </h4>
+                    <div className="text-sm flex gap-2 mt-1 text-slate-700">
+                      <Calendar className="w-4 h-4" />
+                      <span>
+                        {fmtDate(job.date)}
+                        {job.start ? ` • ${job.start}${job.end?`–${job.end}`:""}` : ""}
+                      </span>
                     </div>
-                    <span className="text-gray-400 text-xl leading-none">{open ? "▾" : "▸"}</span>
-                  </button>
+                    {job.address && (
+                      <div className="text-sm flex gap-2 mt-1 text-slate-700">
+                        <MapPin className="w-4 h-4" />
+                        <span>{job.address}</span>
+                      </div>
+                    )}
+                  </div>
+                  {open ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                </div>
+              </button>
 
-                  {/* Collapsible details */}
-                  {open && (
-                    <div className="px-4 pb-4">
-                      {j.address && <div className="text-sm text-gray-700 mb-1">{j.address}</div>}
-                      {j.notes && <div className="text-sm text-gray-600 mb-3">{j.notes}</div>}
-
-                      {/* Room-by-room checklist would render here if you want; keeping this lean */}
-                      <div className="flex flex-wrap gap-2 text-xs text-gray-600">
-                        <span className="px-2 py-1 rounded bg-gray-100">Client: {j.client || "—"}</span>
-                        <span className="px-2 py-1 rounded bg-gray-100">
-                          Time: {toLocalTime(j.start)}
-                          {j.end ? `–${toLocalTime(j.end)}` : ""}
-                        </span>
-                        {j.service_type && (
-                          <span className="px-2 py-1 rounded bg-gray-100">Type: {j.service_type}</span>
+              {/* Body */}
+              {open && (
+                <div className="mt-4 space-y-3">
+                  {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => {
+                    const rOpen = !!rooms[room];
+                    return (
+                      <div key={room} className="border rounded-xl">
+                        <button type="button" onClick={() => toggleRoom(job.id, room)}
+                          className="w-full flex items-center justify-between px-4 py-3">
+                          <span className="font-semibold">{room}</span>
+                          {rOpen ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                        </button>
+                        {rOpen && (
+                          <div className="px-4 pb-4">
+                            <ul className="space-y-2">
+                              {tasks.map((t) => (
+                                <li key={t} className="flex items-start gap-3">
+                                  <input type="checkbox" className="mt-1"
+                                         checked={!!checked[job.id]?.[room]?.[t]}
+                                         onChange={() => toggleTask(job.id, room, t)} />
+                                  <span>{t}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
                         )}
                       </div>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </main>
+                    );
+                  })}
+
+                  {/* Photos */}
+                  <div className="mt-2 p-3 border rounded-xl bg-slate-50">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <Camera className="w-4 h-4" />
+                      <span>Upload before/after photos (3 angles per room)</span>
+                      <input type="file" accept="image/*" multiple className="hidden"
+                             onChange={(e)=>onFiles(job.id, e.target.files)} />
+                    </label>
+                  </div>
+
+                  {/* Complete */}
+                  <div className="flex justify-end">
+                    {!done[job.id] && (
+                      <button onClick={() => completeJob(job)}
+                              className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm flex items-center gap-2">
+                        <Check className="w-4 h-4" />
+                        Mark Complete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
     </div>
   );
 }
+
+// ---------- APP SHELL ----------
+export default function App() {
+  const [tab, setTab] = useState("cleaner");
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-emerald-50 to-white">
+      <header className="px-5 py-6 border-b">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="M.O.R. Clean Daytona" className="w-10 h-10 rounded-full border" />
+            <h1 className="text-xl font-bold text-emerald-900">M.O.R. Clean Daytona</h1>
+          </div>
+          <nav className="flex gap-2">
+            <button onClick={() => setTab("cleaner")}
+              className={`px-4 py-2 rounded-xl ${tab==="cleaner"?"bg-emerald-600 text-white":"bg-white border"}`}>
+              Cleaner Portal
+            </button>
+            <button onClick={() => setTab("customer")}
+              className={`px-4 py-2 rounded-xl ${tab==="customer"?"bg-emerald-600 text-white":"bg-white border"}`}>
+              Customer Portal
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto p-6">
+        <CleanerView />
+      </main>
+
+      <footer className="text-center text-xs text-slate-500 py-6">
+        © {new Date().getFullYear()} MOR – A Clean Living Company
+      </footer>
+    </div>
+  );
+}
+
