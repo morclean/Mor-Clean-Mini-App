@@ -1,106 +1,93 @@
-// api/jobs.js
-// Reads the Google Sheet CSV URL from the Vercel env var SHEET_CSV_URL.
-// Returns normalized events JSON for the app.
+// pages/api/jobs.js
+// Simplest version: reads your Google Sheet "Publish to web (CSV)" directly,
+// no environment variables needed.
 
 export default async function handler(req, res) {
+  // 👉👉👉 PASTE YOUR PUBLISHED CSV LINK BETWEEN THE QUOTES:
+  const JOBS_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv"; // PASTE HERE
+
+  if (!JOBS_CSV || !JOBS_CSV.startsWith("http")) {
+    return res.status(500).json({ error: "CSV link not configured." });
+  }
+
   try {
-    const CSV_URL = process.env.JOBS_CSV_URL;
-
-    if (!CSV_URL || !/^https:\/\/docs\.google\.com\/spreadsheets\/.*output=csv/.test(CSV_URL)) {
-      return res.status(500).json({
-        error:
-          "SHEET_CSV_URL is missing/invalid. In Vercel → Project Settings → Environment Variables, add SHEET_CSV_URL with your 'Publish to web → CSV' link (must end with output=csv).",
-      });
+    const r = await fetch(JOBS_CSV, { headers: { "cache-control": "no-store" } });
+    if (!r.ok) {
+      return res.status(r.status).json({ error: `Failed to fetch CSV (${r.status})` });
     }
-
-    const r = await fetch(CSV_URL, { cache: "no-store" });
-    if (!r.ok) return res.status(502).json({ error: `Failed to fetch CSV (${r.status})` });
-
     const csv = await r.text();
     const rows = parseCSV(csv);
-    if (!rows.length) return res.status(200).json({ events: [] });
+    const events = rows.map(normalizeRow).filter(e => e.date && e.client);
 
-    const head = rows[0].map((h) => (h || "").toString().trim().toLowerCase());
-    const idx = (name) => head.indexOf(name);
-    const col = {
-      date: idx("date"),
-      start: idx("start"),
-      end: idx("end"),
-      client: idx("client"),
-      title: idx("title"),
-      address: idx("address"),
-      notes: idx("notes"),
-      client_phone: idx("client_phone"),
-      service_type: idx("service_type"),
-      status: idx("status"),
-      assigned_cleaner: idx("assigned_cleaner"),
-      job_id: idx("job_id"),
-    };
-
-    const events = [];
-    for (let i = 1; i < rows.length; i++) {
-      const r = rows[i];
-      if (!r.some((v) => (v || "").toString().trim())) continue;
-
-      const status = grab(r, col.status).toUpperCase();
-      if (status.includes("CANCELLED")) continue;
-
-      const rawTitle = grab(r, col.title);
-      const svc = normalizeServiceType(grab(r, col.service_type) || rawTitle);
-
-      events.push({
-        id: makeId(grab(r, col.date), grab(r, col.client), svc || rawTitle || "Job"),
-        date: grab(r, col.date),
-        start: grab(r, col.start),
-        end: grab(r, col.end),
-        client: grab(r, col.client),
-        title: svc || rawTitle || "",
-        address: grab(r, col.address),
-        notes: grab(r, col.notes),
-        client_phone: grab(r, col.client_phone),
-        assigned_cleaner: grab(r, col.assigned_cleaner),
-        job_id: grab(r, col.job_id) || "",
-      });
-    }
-
-    events.sort((a, b) => (a.date + " " + a.start).localeCompare(b.date + " " + b.start));
+    res.setHeader("cache-control", "no-store");
     return res.status(200).json({ events });
   } catch (err) {
-    console.error("jobs.js error:", err);
-    return res.status(500).json({ error: "Server error in /api/jobs", detail: String(err) });
+    return res.status(500).json({ error: "Server error", detail: String(err?.message || err) });
   }
 }
 
-/* helpers */
-function grab(row, idx) { return idx === -1 || idx == null ? "" : (row[idx] || "").toString().trim(); }
-function makeId(date, client, title) {
-  const slug = (s) => (s || "").toString().trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_]/g, "");
-  return `${slug(date)}-${slug(client)}-${slug(title)}`.slice(0, 120);
-}
-function normalizeServiceType(s) {
-  if (!s) return "";
-  const t = s.toLowerCase();
-  if (t.includes("air") && t.includes("bnb")) return "Airbnb";
-  if (t.includes("deep")) return "Deep Clean";
-  if (t.includes("move") && t.includes("out")) return "Move-Out";
-  if (t.includes("move") && t.includes("in")) return "Move-In";
-  if (t.includes("maintenance") || t.includes("standard")) return "Standard Clean";
-  return s;
-}
-// Tiny CSV parser (handles quoted commas)
+/* ---------- helpers ---------- */
+
 function parseCSV(text) {
-  const rows = []; let row = []; let cur = ""; let inQ = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQ) {
-      if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else { inQ = false; } }
-      else cur += c;
-    } else {
-      if (c === '"') inQ = true;
-      else if (c === ",") { row.push(cur); cur = ""; }
-      else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
-      else if (c !== "\r") cur += c;
-    }
+  const lines = text.replace(/\r/g, "").split("\n").filter(Boolean);
+  if (!lines.length) return [];
+  const headers = split(lines[0]).map(h => h.trim().toLowerCase());
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = split(lines[i]);
+    const row = {};
+    headers.forEach((h, idx) => (row[h] = (cols[idx] || "").trim()));
+    out.push(row);
   }
-  row.push(cur); rows.push(row); return rows;
+  return out;
+}
+function split(line) {
+  const out = [];
+  let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (q && line[i + 1] === '"') { cur += '"'; i++; } else { q = !q; }
+    } else if (ch === "," && !q) { out.push(cur); cur = ""; }
+    else { cur += ch; }
+  }
+  out.push(cur);
+  return out;
+}
+
+function normalizeRow(r) {
+  const get = (n) => r[n] ?? r[n?.toLowerCase?.()] ?? "";
+
+  const date   = get("date");
+  const start  = get("start");
+  const end    = get("end");
+  const client = get("client") || get("customer") || "";
+  const title  = get("title");
+  const addr   = get("address");
+  const notes  = get("notes");
+  const phone  = get("client_phone") || get("phone") || "";
+  let service  = get("service_type");
+
+  // If service_type empty, guess from title text
+  if (!service) {
+    const t = (title || "").toLowerCase();
+    if (t.includes("air") && (t.includes("bnb") || t.includes("turn"))) service = "Airbnb";
+    else if (t.includes("deep")) service = "Deep Clean";
+    else service = "Standard";
+  }
+
+  const id = `${date || "no-date"}-${(client || "").replace(/\s+/g,"_")}-${service.replace(/\s+/g,"_")}`;
+
+  return {
+    id,
+    date,
+    start,
+    end,
+    client,
+    title: service,    // what the UI shows as the type
+    address: addr,     // will show if your Jobs sheet’s Address column has values
+    notes,
+    client_phone: phone,
+    job_id: "",        // reserved for later
+  };
 }
