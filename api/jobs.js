@@ -4,7 +4,7 @@
 
 export const config = { runtime: "edge" }; // works on Vercel Edge
 
-// VERY small CSV parser that handles quoted commas/newlines.
+// Small CSV parser that handles quotes/commas/newlines.
 function parseCSV(text) {
   const rows = [];
   let row = [];
@@ -21,7 +21,6 @@ function parseCSV(text) {
       row.push(val); val = "";
     } else if ((c === '\n' || c === '\r') && !q) {
       if (val !== "" || row.length) { row.push(val); rows.push(row); row = []; val = ""; }
-      // swallow \r\n pairs
       if (c === '\r' && n === '\n') i++;
     } else {
       val += c;
@@ -44,7 +43,7 @@ function makeId(date, client, title) {
   return `${clean(date)}-${clean(client)}-${clean(title)}`;
 }
 
-export default async function handler(req) {
+export default async function handler() {
   try {
     const url = process.env.JOBS_CSV_URL;
     if (!url) {
@@ -63,8 +62,6 @@ export default async function handler(req) {
     // Build header map (case-insensitive)
     const header = rows[0].map(h => String(h || "").trim());
     const idx = Object.fromEntries(header.map((h, i) => [h.toLowerCase(), i]));
-
-    // Helper to read a cell by any of several possible header names
     const getCell = (r, names = []) => {
       for (const name of names) {
         const i = idx[name.toLowerCase()];
@@ -85,7 +82,7 @@ export default async function handler(req) {
     const ADDRESS_KEYS    = ["address", "customer_address", "addr", "location_address"];
     const NOTES_KEYS      = ["notes", "note", "memo", "details"];
     const PHONE_KEYS      = ["client_phone", "phone", "customer_phone"];
-    const TASKS_KEYS      = ["tasks"]; // pipe-separated optional
+    const TASKS_KEYS      = ["tasks"]; // optional | pipe-separated
 
     const events = [];
 
@@ -93,7 +90,7 @@ export default async function handler(req) {
       const row = rows[r];
 
       const date = getCell(row, DATE_KEYS);
-      if (!date) continue; // skip empty row
+      if (!date) continue;
 
       const start   = getCell(row, START_KEYS);
       const end     = getCell(row, END_KEYS);
@@ -104,15 +101,18 @@ export default async function handler(req) {
       const phone   = getCell(row, PHONE_KEYS);
       const tasksRaw= getCell(row, TASKS_KEYS);
 
-      // Service: prefer dedicated service/service_type, otherwise title, fallback "Clean"
       const service = firstNonEmpty(
-        { service: getCell(row, ["service"]), service_type: getCell(row, ["service_type"]), type: getCell(row, ["type"]), title: rawTitle },
+        {
+          service: getCell(row, ["service"]),
+          service_type: getCell(row, ["service_type"]),
+          type: getCell(row, ["type"]),
+          title: rawTitle
+        },
         ["service", "service_type", "type", "title"],
         "Clean"
       );
 
-      const title   = firstNonEmpty({ title: rawTitle, service }, ["title", "service"], "Clean");
-
+      const title = firstNonEmpty({ title: rawTitle, service }, ["title", "service"], "Clean");
       const id = makeId(date, client, title);
 
       events.push({
@@ -120,8 +120,8 @@ export default async function handler(req) {
         date,
         start,
         end,
-        title,           // what shows as the job name
-        service,         // more explicit service type
+        title,           // job name
+        service,         // explicit service type
         client,
         address,
         notes,
