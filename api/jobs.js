@@ -4,7 +4,7 @@
 
 export default async function handler(req, res) {
   try {
-    const CSV_URL = process.env.SHEET_CSV_URL;
+    const CSV_URL = process.env.JOBS_CSV_URL;
 
     if (!CSV_URL || !/^https:\/\/docs\.google\.com\/spreadsheets\/.*output=csv/.test(CSV_URL)) {
       return res.status(500).json({
