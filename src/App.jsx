@@ -1,293 +1,289 @@
-/****************************************************
- *  MOR Clean — Square → Google Sheet sync (no Zapier)
- *  Single-file drop-in for Apps Script (Code.gs)
- ****************************************************/
+import React, { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Check, Clock, Camera, Calendar, MapPin, LogIn, LogOut,
+  ChevronDown, ChevronRight, Search
+} from "lucide-react";
+import { MASTER_CHECKLIST } from "./lib/checklist";
 
-const CONFIG = {
-  // REQUIRED — your Square **Production** Personal Access Token (starts with EAAA…)
-  ACCESS_TOKEN: 'EAAAlzqhHOIvBUohyJvFjRvVZqAKFoFQIv1H0OJTMwY3h7Yf87XjpYihlrColq3D',
-
-  // REQUIRED — your Square Location ID (or "" to fetch all)
-  LOCATION_ID: 'LE827SM5P9EGB',  // <-- replace with your real Location ID
-
-  // Sheet / window
-  SHEET_NAME: 'Jobs',            // tab name (must match your sheet)
-  TIMEZONE: 'America/New_York',  // change if not Eastern
-  DAYS_PAST: 0,                  // how many days back to include
-  DAYS_AHEAD: 30,                // Square enforces ≤ 30 days
-
-  // Square API version (keep recent)
-  SQUARE_VERSION: '2025-08-20',
-
-  // Logging
-  DEBUG: false
+// ---------- tiny helpers ----------
+const isoToday = () => new Date().toISOString().slice(0,10);
+const startOfWeek = () => {
+  const d = new Date(); const day = d.getDay(); const diff = d.getDate()-day+(day===0?-6:1);
+  return new Date(d.setDate(diff)).toISOString().slice(0,10);
 };
+const endOfWeek = () => { const d = new Date(startOfWeek()); d.setDate(d.getDate()+6); return d.toISOString().slice(0,10); };
+const fmtDate = (iso) => new Date(iso).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"});
 
-/* ================= UI MENU (Run / Triggers) ================= */
+const jobId = (j) => `${j.date}-${(j.client||"").slice(0,40)}-${(j.title||"Clean").slice(0,40)}`;
 
-function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('MOR Sync')
-    .addItem('Run now', 'syncSquareToSheet')
-    .addSeparator()
-    .addItem('Install hourly trigger', 'installHourlyTrigger')
-    .addItem('Remove all triggers', 'removeAllTriggers')
-    .addToUi();
-}
+// ---------- CLEANER ----------
+function CleanerView() {
+  const [jobs, setJobs] = useState([]);
+  const [jobOpen, setJobOpen] = useState({});       // <— job-level accordion
+  const [roomOpen, setRoomOpen] = useState({});
+  const [checked, setChecked] = useState({});
+  const [files, setFiles] = useState({});
+  const [done, setDone] = useState({});
+  const [clockIn, setClockIn] = useState(null);
+  const [filter, setFilter] = useState("today");
+  const [query, setQuery] = useState("");
 
-function installHourlyTrigger() {
-  // remove duplicates first
-  ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === 'syncSquareToSheet') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('syncSquareToSheet').timeBased().everyHours(1).create();
-  toast('Installed hourly trigger.');
-}
+  // load jobs from /api/jobs
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/jobs", { cache: "no-store" });
+        const { events = [] } = await res.json();
 
-function removeAllTriggers() {
-  ScriptApp.getProjectTriggers().forEach(ScriptApp.deleteTrigger);
-  toast('Removed all triggers.');
-}
+        const mapped = events.map((e) => ({
+          id: jobId(e),
+          date: e.date,
+          start: e.start || "",
+          end: e.end || "",
+          title: e.title || "Clean",
+          client: e.client || "",
+          address: e.address || "",
+          notes: e.notes || "",
+        }));
 
-/* ================= MAIN SYNC ================= */
+        const today = isoToday();
+        const in30 = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
 
-function syncSquareToSheet() {
-  try {
-    if (!CONFIG.ACCESS_TOKEN || CONFIG.ACCESS_TOKEN.indexOf('EAAA') !== 0) {
-      throw new Error('Missing or invalid Square ACCESS_TOKEN (must be Production and start with EAAA…).');
+        const upcoming = mapped
+          .filter(j => j.date >= today && j.date <= in30)
+          .sort((a,b) => a.date.localeCompare(b.date) || (a.start||"").localeCompare(b.start||""));
+
+        // defaults: job collapsed, rooms collapsed
+        const jo = {}; const ro = {};
+        for (const j of upcoming) {
+          jo[j.id] = false;
+          ro[j.id] = Object.fromEntries(Object.keys(MASTER_CHECKLIST).map(r => [r, false]));
+        }
+
+        setJobs(upcoming);
+        setJobOpen(jo);
+        setRoomOpen(ro);
+      } catch (e) {
+        console.error(e);
+        setJobs([]);
+      }
+    })();
+  }, []);
+
+  const visible = useMemo(() => {
+    let list = [...jobs];
+    if (filter === "today") list = list.filter(j => j.date === isoToday());
+    if (filter === "week")  list = list.filter(j => j.date >= startOfWeek() && j.date <= endOfWeek());
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      list = list.filter(j =>
+        (j.title||"").toLowerCase().includes(q) ||
+        (j.client||"").toLowerCase().includes(q) ||
+        (j.address||"").toLowerCase().includes(q) ||
+        (j.notes||"").toLowerCase().includes(q)
+      );
     }
+    return list;
+  }, [jobs, filter, query]);
 
-    const tz = CONFIG.TIMEZONE;
-    const now = new Date();
-    const min = shiftDays(startOfDay(now, tz), -CONFIG.DAYS_PAST);
-    const max = shiftDays(endOfDay(now, tz), CONFIG.DAYS_AHEAD);
+  const toggleJob = (id) =>
+    setJobOpen(prev => ({ ...prev, [id]: !prev[id] }));
 
-    const bookings = listBookings({
-      location_id: CONFIG.LOCATION_ID || undefined,
-      start_at_min: min.toISOString(),
-      start_at_max: max.toISOString()
+  const toggleRoom = (jid, room) =>
+    setRoomOpen(prev => ({ ...prev, [jid]: { ...prev[jid], [room]: !prev[jid]?.[room] } }));
+
+  const toggleTask = (jid, room, task) =>
+    setChecked(prev => {
+      const next = structuredClone(prev);
+      if (!next[jid]) next[jid] = {};
+      if (!next[jid][room]) next[jid][room] = {};
+      next[jid][room][task] = !next[jid][room][task];
+      return next;
     });
 
-    if (CONFIG.DEBUG) Logger.log(`Fetched ${bookings.length} bookings`);
+  const onFiles = (jid, list) => setFiles(p => ({ ...p, [jid]: list }));
 
-    // Build rows
-    const rows = [];
-    for (const b of bookings) {
-      // Customer
-      const cust = (b.customer_id) ? fetchCustomer(b.customer_id) : null;
-      const customerName = displayNameFromCustomer(cust);
-      const phone = phoneFromCustomer(cust);
-
-      // Service name (prefer human-readable)
-      const seg = (b.appointment_segments && b.appointment_segments[0]) || null;
-      const serviceName =
-        (seg && seg.service_variation && seg.service_variation.name) ||
-        (seg && seg.service_variation_id) || 'Clean';
-
-      // Duration → end time (fallback 120 min)
-      const durationMin = (seg && (seg.service_variation_version && seg.service_variation_version.duration_minutes)) ||
-                          (seg && seg.duration_minutes) || 120;
-
-      const startAt = new Date(b.start_at);
-      const endAt = new Date(startAt.getTime() + durationMin * 60000);
-      const dateISO = startAt.toISOString().slice(0, 10);
-      const startHHMM = Utilities.formatDate(startAt, tz, 'HH:mm');
-      const endHHMM   = Utilities.formatDate(endAt,   tz, 'HH:mm');
-
-      // Address (single line)
-      const addressStr = formatAddress(b.address);
-
-      // Status
-      const status = b.status || '';
-
-      rows.push([
-        dateISO,            // date
-        startHHMM,          // start
-        endHHMM,            // end
-        serviceName,        // title
-        customerName,       // client
-        addressStr,         // address
-        '',                 // notes (keep blank unless you map)
-        phone,              // client_phone
-        serviceName,        // service_type
-        '',                 // assigned_cleaner
-        status,             // status
-        '',                 // price (optional if you map orders)
-        ''                  // paid (optional)
-      ]);
-    }
-
-    // Write to Sheet
-    const headers = [
-      'date','start','end','title','client','address','notes',
-      'client_phone','service_type','assigned_cleaner','status','price','paid'
-    ];
-    const sheet = getSheet(CONFIG.SHEET_NAME);
-    writeHeader(sheet, headers);
-    clearData(sheet);
-
-    if (rows.length) sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
-
-    toast(`Synced ${rows.length} booking(s) from Square.`, 5);
-  } catch (err) {
-    toast('Sync error: ' + err.message, 8);
-    throw err;
-  }
-}
-
-/* ================= SQUARE HELPERS ================= */
-
-function listBookings(params) {
-  // Build the query string with Square’s 30-day window limits
-  const base = 'https://connect.squareup.com/v2/bookings';
-  const q = toQuery(Object.assign({}, params, {
-    limit: 200
-  }));
-
-  let url = `${base}?${q}`;
-  let all = [];
-  let cursor;
-
-  do {
-    const pageUrl = url + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
-    const res = squareGET(pageUrl);
-    if (CONFIG.DEBUG) Logger.log(JSON.stringify(res, null, 2));
-
-    if (res.errors) {
-      throw new Error('Square API error: ' + JSON.stringify(res.errors));
-    }
-
-    if (res.bookings && Array.isArray(res.bookings)) all = all.concat(res.bookings);
-    cursor = res.cursor || null;
-  } while (cursor);
-
-  return all;
-}
-
-function fetchCustomer(customerId) {
-  if (!customerId) return null;
-  const url = `https://connect.squareup.com/v2/customers/${encodeURIComponent(customerId)}`;
-  const res = squareGET(url);
-  if (res && res.customer) return res.customer;
-  return null;
-}
-
-function squareGET(url) {
-  const options = {
-    method: 'get',
-    muteHttpExceptions: true,
-    headers: {
-      'Authorization': `Bearer ${CONFIG.ACCESS_TOKEN}`,
-      'Square-Version': CONFIG.SQUARE_VERSION,
-      'Content-Type': 'application/json'
-    }
+  const completeJob = async (job) => {
+    // Placeholder; wire to Supabase later
+    console.log("Complete job", job, checked[job.id], files[job.id]);
+    setDone(d => ({ ...d, [job.id]: true }));
   };
-  const resp = UrlFetchApp.fetch(url, options);
-  const code = resp.getResponseCode();
-  const text = resp.getContentText();
 
-  if (CONFIG.DEBUG) Logger.log(`GET ${url} -> ${code}\n${text}`);
+  return (
+    <div className="space-y-6">
+      {/* Filters + search */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="p-5 rounded-2xl bg-emerald-50 border">
+          <div className="flex items-center gap-3">
+            <Clock className="w-5 h-5 text-emerald-700" />
+            <h3 className="font-semibold">Shift</h3>
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            {!clockIn ? (
+              <button onClick={() => setClockIn(Date.now())} className="px-4 py-2 rounded-xl bg-emerald-600 text-white flex items-center gap-2">
+                <LogIn className="w-4 h-4" /> Clock In
+              </button>
+            ) : (
+              <>
+                <span className="text-sm">
+                  Clocked in at{" "}
+                  <strong>{new Date(clockIn).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</strong>
+                </span>
+                <button onClick={() => setClockIn(null)} className="px-4 py-2 rounded-xl bg-rose-600 text-white flex items-center gap-2">
+                  <LogOut className="w-4 h-4" /> Clock Out
+                </button>
+              </>
+            )}
+          </div>
+        </div>
 
-  if (code >= 200 && code < 300) {
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      throw new Error('Square JSON parse error');
-    }
-  } else {
-    // Try to surface Square error details
-    let msg = `HTTP ${code}`;
-    try {
-      const body = JSON.parse(text);
-      if (body && body.errors) msg = JSON.stringify(body.errors);
-    } catch (_) { /* ignore */ }
-    throw new Error('Square API error: ' + msg);
-  }
+        <div className="p-5 rounded-2xl bg-white border">
+          <div className="flex items-center justify-between">
+            <div className="flex gap-2">
+              {["today","week","all"].map(k => (
+                <button key={k} onClick={() => setFilter(k)}
+                  className={`px-3 py-1.5 rounded-full text-sm border ${filter===k ? "bg-emerald-600 text-white border-emerald-600":"bg-white"}`}>
+                  {k==="today"?"Today":k==="week"?"This Week":"All"}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-2 top-2.5 text-slate-400" />
+              <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search client, address, notes…"
+                     className="pl-8 pr-3 py-2 rounded-lg border text-sm w-56" />
+            </div>
+          </div>
+          <p className="text-xs text-slate-500 mt-2">v9 • {isoToday()}</p>
+        </div>
+      </div>
+
+      {/* Jobs */}
+      <div className="grid gap-5">
+        {visible.length === 0 && <p className="text-sm text-slate-500">No jobs.</p>}
+
+        {visible.map(job => {
+          const open = !!jobOpen[job.id];
+          const rooms = roomOpen[job.id] || {};
+          return (
+            <motion.div key={job.id} initial={{opacity:0,y:10}} animate={{opacity:1,y:0}}
+              className={`rounded-2xl border p-5 shadow-sm ${done[job.id]?"bg-emerald-50":"bg-white"}`}>
+              {/* Header row (NO internal ID shown) */}
+              <button onClick={() => toggleJob(job.id)} className="w-full text-left">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h4 className="text-lg font-semibold text-slate-800">
+                      {job.title || "Cleaning"} • <span className="text-emerald-900">{job.client}</span>
+                    </h4>
+                    <div className="text-sm flex gap-2 mt-1 text-slate-700">
+                      <Calendar className="w-4 h-4" />
+                      <span>
+                        {fmtDate(job.date)}
+                        {job.start ? ` • ${job.start}${job.end?`–${job.end}`:""}` : ""}
+                      </span>
+                    </div>
+                    {job.address && (
+                      <div className="text-sm flex gap-2 mt-1 text-slate-700">
+                        <MapPin className="w-4 h-4" />
+                        <span>{job.address}</span>
+                      </div>
+                    )}
+                  </div>
+                  {open ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                </div>
+              </button>
+
+              {/* Body */}
+              {open && (
+                <div className="mt-4 space-y-3">
+                  {Object.entries(MASTER_CHECKLIST).map(([room, tasks]) => {
+                    const rOpen = !!rooms[room];
+                    return (
+                      <div key={room} className="border rounded-xl">
+                        <button type="button" onClick={() => toggleRoom(job.id, room)}
+                          className="w-full flex items-center justify-between px-4 py-3">
+                          <span className="font-semibold">{room}</span>
+                          {rOpen ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                        </button>
+                        {rOpen && (
+                          <div className="px-4 pb-4">
+                            <ul className="space-y-2">
+                              {tasks.map((t) => (
+                                <li key={t} className="flex items-start gap-3">
+                                  <input type="checkbox" className="mt-1"
+                                         checked={!!checked[job.id]?.[room]?.[t]}
+                                         onChange={() => toggleTask(job.id, room, t)} />
+                                  <span>{t}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Photos */}
+                  <div className="mt-2 p-3 border rounded-xl bg-slate-50">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <Camera className="w-4 h-4" />
+                      <span>Upload before/after photos (3 angles per room)</span>
+                      <input type="file" accept="image/*" multiple className="hidden"
+                             onChange={(e)=>onFiles(job.id, e.target.files)} />
+                    </label>
+                  </div>
+
+                  {/* Complete */}
+                  <div className="flex justify-end">
+                    {!done[job.id] && (
+                      <button onClick={() => completeJob(job)}
+                              className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm flex items-center gap-2">
+                        <Check className="w-4 h-4" />
+                        Mark Complete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
-/* ================= SHEET HELPERS ================= */
+// ---------- APP SHELL ----------
+export default function App() {
+  const [tab, setTab] = useState("cleaner");
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-emerald-50 to-white">
+      <header className="px-5 py-6 border-b">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="M.O.R. Clean Daytona" className="w-10 h-10 rounded-full border" />
+            <h1 className="text-xl font-bold text-emerald-900">M.O.R. Clean Daytona</h1>
+          </div>
+          <nav className="flex gap-2">
+            <button onClick={() => setTab("cleaner")}
+              className={`px-4 py-2 rounded-xl ${tab==="cleaner"?"bg-emerald-600 text-white":"bg-white border"}`}>
+              Cleaner Portal
+            </button>
+            <button onClick={() => setTab("customer")}
+              className={`px-4 py-2 rounded-xl ${tab==="customer"?"bg-emerald-600 text-white":"bg-white border"}`}>
+              Customer Portal
+            </button>
+          </nav>
+        </div>
+      </header>
 
-function getSheet(name) {
-  const ss = SpreadsheetApp.getActive();
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
-  return sheet;
-}
+      <main className="max-w-5xl mx-auto p-6">
+        <CleanerView />
+      </main>
 
-function writeHeader(sheet, headers) {
-  const range = sheet.getRange(1, 1, 1, headers.length);
-  range.setValues([headers]);
-  range.setFontWeight('bold');
-}
-
-function clearData(sheet) {
-  const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
-  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
-}
-
-function toast(msg, secs) {
-  SpreadsheetApp.getActive().toast(msg, 'MOR Sync', secs || 3);
-}
-
-/* ================= DATA HELPERS ================= */
-
-function displayNameFromCustomer(c) {
-  if (!c) return '';
-  const full = [c.given_name, c.family_name].filter(Boolean).join(' ').trim();
-  return full || c.company_name || '';
-}
-
-function phoneFromCustomer(c) {
-  if (!c || !Array.isArray(c.phone_numbers)) return '';
-  const p = c.phone_numbers.find(Boolean);
-  return (p && p.phone_number) ? p.phone_number : '';
-}
-
-function formatAddress(a) {
-  // Booking may embed an address object
-  if (!a) return '';
-  const parts = [
-    (a.address_line_1 || '').trim(),
-    (a.address_line_2 || '').trim(),
-    [a.locality, a.administrative_district_level_1].filter(Boolean).join(', '),
-    (a.postal_code || '').trim()
-  ].filter(Boolean);
-  return parts.join(' • ');
-}
-
-function toQuery(params) {
-  const esc = encodeURIComponent;
-  return Object.keys(params)
-    .filter(k => params[k] !== undefined && params[k] !== null && params[k] !== '')
-    .map(k => `${esc(k)}=${esc(params[k])}`)
-    .join('&');
-}
-
-/* ================= DATE HELPERS ================= */
-
-function startOfDay(d, tz) {
-  const s = new Date(d);
-  const str = Utilities.formatDate(s, tz, 'yyyy-MM-dd') + 'T00:00:00';
-  return new Date(str + getTZOffsetSuffix(tz, s));
-}
-
-function endOfDay(d, tz) {
-  const s = new Date(d);
-  const str = Utilities.formatDate(s, tz, 'yyyy-MM-dd') + 'T23:59:59';
-  return new Date(str + getTZOffsetSuffix(tz, s));
-}
-
-function shiftDays(d, n) {
-  return new Date(d.getTime() + n * 24 * 60 * 60 * 1000);
-}
-
-// crude but effective offset builder so our ISO has local tz suffix
-function getTZOffsetSuffix(tz, date) {
-  const offMin = -1 * (Utilities.formatDate(date, tz, 'Z') / 100) * 60; // "−0400" → minutes
-  const sign = offMin <= 0 ? '+' : '-';
-  const abs = Math.abs(offMin);
-  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
-  const mm = String(abs % 60).padStart(2, '0');
-  return sign + hh + ':' + mm;
+      <footer className="text-center text-xs text-slate-500 py-6">
+        © {new Date().getFullYear()} MOR – A Clean Living Company
+      </footer>
+    </div>
+  );
 }
