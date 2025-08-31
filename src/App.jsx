@@ -5,7 +5,7 @@
 
 const CONFIG = {
   // REQUIRED — your Square **Production** Personal Access Token (starts with EAAA…)
-  ACCESS_TOKEN: 'EAAA...REPLACE_WITH_YOUR_PRODUCTION_TOKEN...',
+  ACCESS_TOKEN: 'EAAAlzqhHOIvBUohyJvFjRvVZqAKFoFQIv1H0OJTMwY3h7Yf87XjpYihlrColq3D',
 
   // REQUIRED — your Square Location ID (or "" to fetch all)
   LOCATION_ID: 'LE827SM5P9EGB',  // <-- replace with your real Location ID
