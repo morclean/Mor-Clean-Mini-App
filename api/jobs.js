@@ -6,9 +6,9 @@ import csv from "csvtojson";
 
 export default async function handler(req, res) {
   try {
-    const JOBS_CSV = process.env.SHEET_CSV_URL || "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv";
+    const JOBS_CSV = process.env.SHEET_CSV_URL || "PASTE_YOUR_GOOGLE_SHEET_CSV_LINK_HERE";
 
-    if (!JOBS_CSV || JOBS_CSV.includes("PASTE_YOUR_GOOGLE_SHEET_CSV_LINK_HERE")) {
+    if (!JOBS_CSV || JOBS_CSV.includes("https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv")) {
       return res.status(500).json({ error: "CSV link not configured." });
     }
 
