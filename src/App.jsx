@@ -45,9 +45,25 @@ function JobCard({ job }) {
   const [open, setOpen] = useState(false);
 
   const service = prettyService(job.service_type || job.title);
-  const titleLine = [job.client, isUglyId(job.title) ? null : job.title]
-    .filter(Boolean)
-    .join(" • ");
+  const titleLine = // ---- choose a human-looking name, avoid Square IDs ----
+const looksLikeId = (s) =>
+  !!s && /^[A-Z0-9]{12,}$/.test(s.replace(/\s|[-_/]/g, ""));  // long all-caps+digits
+
+const candidates = [
+  (job.client || "").trim(),
+  (job.title || "").trim(),
+  (job.notes || "").trim(),
+].filter(Boolean);
+
+const name =
+  candidates.find(v => !looksLikeId(v)) || "Scheduled Clean";
+
+// service badge (from service_type, fallback to title keywords)
+const service = prettyService(job.service_type || job.title || "");
+
+// main heading shown on the card
+const titleLine = name;
+
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm">
