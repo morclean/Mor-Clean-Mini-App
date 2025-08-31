@@ -1,180 +1,266 @@
 // src/App.jsx
 import { useEffect, useMemo, useState } from "react";
 
-function classNames(...a) { return a.filter(Boolean).join(" "); }
+/* -------------------------- date/time helpers -------------------------- */
+const now = () => new Date();
+const ymd = (d) => d.toISOString().slice(0, 10);
 
-const tabs = ["Today", "This Week", "All"];
-
-function isSameDay(a, b) { return a.toISOString().slice(0,10) === b.toISOString().slice(0,10); }
-function startOfWeek(d) {
-  const x = new Date(d); const day = x.getDay(); // 0 Sun
-  const diff = (day + 6) % 7; // Mon-based
-  x.setDate(x.getDate() - diff);
-  x.setHours(0,0,0,0);
-  return x;
+function parseTime(hhmm, baseDate) {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  const d = new Date(baseDate);
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d;
 }
-function endOfWeek(d) {
-  const s = startOfWeek(d);
-  const e = new Date(s);
-  e.setDate(s.getDate() + 6);
-  e.setHours(23,59,59,999);
-  return e;
+function sameDay(a, b) {
+  return ymd(a) === ymd(b);
 }
-
-function withinThisWeek(dateStr) {
-  const today = new Date();
-  const d = new Date(dateStr + "T00:00:00");
-  return d >= startOfWeek(today) && d <= endOfWeek(today);
+function inThisWeek(d, base = now()) {
+  const b = new Date(base);
+  const dow = b.getDay(); // 0 Sun..6 Sat
+  const start = new Date(b);
+  start.setDate(b.getDate() - dow);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+  return d >= start && d < end;
 }
-
-function JobCard({ ev }) {
-  const time = [ev.start, ev.end].filter(Boolean).join(" — ");
-  const badge = ev.title || "Job";
-  const assigned = ev.assigned_clean ? ev.assigned_clean : "Unassigned";
-  const subline = ev.address ? ev.address : "No address on file";
-
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium">
-          {badge}
-        </span>
-        {time && <span className="text-xs text-slate-500">{time}</span>}
-      </div>
-
-      <div className="text-lg font-semibold">{ev.client || "Client"}</div>
-      <div className="text-sm text-slate-600">{subline}</div>
-
-      <div className="mt-2 text-xs text-slate-500">
-        {assigned ? `Assigned: ${assigned}` : "Unassigned"}
-        {ev.status ? ` • Status: ${ev.status}` : ""}
-        {ev.price ? ` • Price: ${ev.price}` : ""}
-        {ev.paid ? ` • Paid: ${ev.paid}` : ""}
-      </div>
-    </div>
-  );
+function labelServiceType(raw) {
+  const t = (raw || "").toLowerCase();
+  if (t.includes("air") || t.includes("turn")) return "Airbnb Turnover";
+  if (t.includes("deep")) return "Deep Clean";
+  if (t.includes("move")) return "Move-In/Out";
+  if (t.includes("post") || t.includes("reno")) return "Post-Renovation";
+  return "Standard Clean";
 }
 
+/* ------------------------------- App ----------------------------------- */
 export default function App() {
-  const [tab, setTab] = useState("Today");      // default Today
+  const [mode, setMode] = useState("cleaner"); // "cleaner" | "customer"
+  const [tab, setTab] = useState("today");     // "today" | "week" | "all"
   const [loading, setLoading] = useState(true);
-  const [events, setEvents] = useState([]);
+  const [jobs, setJobs] = useState([]);
   const [query, setQuery] = useState("");
 
+  // Customer sign-in
+  const [phone, setPhone] = useState("");
+  const phoneDigits = phone.replace(/\D/g, "");
+
   useEffect(() => {
-    let alive = true;
-    async function go() {
+    const load = async () => {
       setLoading(true);
       try {
-        const r = await fetch("/api/jobs", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
-        setEvents(Array.isArray(j.events) ? j.events : []);
-      } catch (e) {
-        setEvents([]);
-      } finally {
-        if (alive) setLoading(false);
+        const res = await fetch(`/api/jobs?ts=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`API ${res.status}`);
+        const data = await res.json();
+        const events = Array.isArray(data?.events) ? data.events : [];
+
+        const normalized = events.map((e, i) => {
+          const dateObj = e.date ? new Date(e.date) : now();
+          return {
+            id: e.id || `row-${i}`,
+            date: e.date || ymd(dateObj),
+            start: e.start || "",
+            end: e.end || "",
+            client: (e.client || "").trim(),
+            address: (e.address || "").trim(),
+            notes: e.notes || "",
+            client_phone: (e.client_phone || "").trim(),
+            service: labelServiceType(e.title || e.service_type || ""),
+            startDateTime: parseTime(e.start, dateObj) || dateObj,
+          };
+        });
+
+        // sort by datetime
+        normalized.sort((a, b) => a.startDateTime - b.startDateTime);
+
+        setJobs(normalized);
+        setLoading(false);
+
+        // If "Today" would be empty, auto-fallback to "All" (first load)
+        const todayCount = normalized.filter((j) => sameDay(new Date(j.date), now())).length;
+        if (todayCount === 0) setTab("all");
+      } catch (err) {
+        console.error(err);
+        setJobs([]);
+        setLoading(false);
       }
-    }
-    go();
-    return () => { alive = false; };
+    };
+    load();
   }, []);
 
-  // filter by tab + search
-  const todayStr = new Date().toISOString().slice(0,10);
-
-  const filtered = useMemo(() => {
-    let arr = events;
-
-    if (tab === "Today") {
-      arr = arr.filter(ev => ev.date === todayStr);
-    } else if (tab === "This Week") {
-      arr = arr.filter(ev => withinThisWeek(ev.date));
+  /* -------------------- CLEANER: filter + search -------------------- */
+  const cleanerList = useMemo(() => {
+    let pool = jobs;
+    if (tab === "today") {
+      pool = pool.filter((j) => sameDay(new Date(j.date), now()));
+    } else if (tab === "week") {
+      pool = pool.filter((j) => inThisWeek(new Date(j.date)));
     }
+    const term = query.trim().toLowerCase();
+    if (!term) return pool;
+    return pool.filter((j) =>
+      `${j.client} ${j.address} ${j.service} ${j.notes}`.toLowerCase().includes(term)
+    );
+  }, [jobs, tab, query]);
 
-    const q = query.trim().toLowerCase();
-    if (q) {
-      arr = arr.filter(ev =>
-        (ev.client || "").toLowerCase().includes(q) ||
-        (ev.address || "").toLowerCase().includes(q) ||
-        (ev.notes || "").toLowerCase().includes(q) ||
-        (ev.title || "").toLowerCase().includes(q) ||
-        (ev.assigned_clean || "").toLowerCase().includes(q)
-      );
-    }
-    // sort date → start time
-    arr.sort((a,b) => {
-      const d = (a.date || "").localeCompare(b.date || "");
-      if (d !== 0) return d;
-      return (a.start || "").localeCompare(b.start || "");
-    });
-    return arr;
-  }, [events, tab, query, todayStr]);
+  /* -------------------- CUSTOMER: phone filter ---------------------- */
+  const customerList = useMemo(() => {
+    if (!phoneDigits) return [];
+    return jobs.filter((j) => (j.client_phone || "").replace(/\D/g, "").includes(phoneDigits));
+  }, [jobs, phoneDigits]);
 
+  /* ------------------------------- UI -------------------------------- */
   return (
-    <div className="min-h-screen bg-gradient-to-b from-emerald-50 to-white text-slate-800">
-      {/* Header */}
-      <header className="sticky top-0 z-10 mb-4 border-b bg-white/80 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <img src="/logo.png" alt="M.O.R. Clean Daytona" className="h-8 w-8 rounded-full border" />
-            <div>
-              <div className="text-lg font-semibold">M.O.R. Clean Daytona</div>
-              <div className="text-xs text-slate-500">Women-owned • Family-operated</div>
-            </div>
-          </div>
+    <div className="min-h-screen bg-emerald-50">
+      {/* header with portal toggle */}
+      <header className="sticky top-0 z-10 backdrop-blur bg-emerald-50/80 border-b">
+        <div className="mx-auto max-w-5xl px-4 py-3 flex items-center gap-3">
+          <img src="/logo.png" alt="MOR" className="h-7 w-7 rounded-full ring-2 ring-emerald-200" />
+          <div className="font-semibold">M.O.R. Clean Daytona</div>
 
-          <div className="flex items-center gap-2">
-            {tabs.map(t => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={classNames(
-                  "rounded-full border px-3 py-1 text-sm",
-                  tab === t ? "bg-emerald-600 text-white border-emerald-600" : "bg-white hover:bg-emerald-50"
-                )}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <div className="hidden md:block">
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Search client, address, notes…"
-              className="w-64 rounded-xl border px-3 py-1.5 text-sm outline-none focus:border-emerald-500"
-            />
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setMode("cleaner")}
+              className={`px-3 py-1 rounded-full text-sm ${mode === "cleaner" ? "bg-emerald-600 text-white" : "bg-white"}`}
+            >
+              Cleaner Portal
+            </button>
+            <button
+              onClick={() => setMode("customer")}
+              className={`px-3 py-1 rounded-full text-sm ${mode === "customer" ? "bg-emerald-600 text-white" : "bg-white"}`}
+            >
+              Customer Portal
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Content */}
-      <main className="mx-auto max-w-5xl px-4 pb-16">
-        <div className="md:hidden mb-3">
-          <input
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search client, address, notes…"
-            className="w-full rounded-xl border px-3 py-2 text-sm outline-none focus:border-emerald-500"
+      <main className="mx-auto max-w-5xl px-4 py-6">
+        {mode === "cleaner" ? (
+          <CleanerView
+            loading={loading}
+            tab={tab}
+            setTab={setTab}
+            query={query}
+            setQuery={setQuery}
+            items={cleanerList}
           />
-        </div>
-
-        {loading ? (
-          <div className="rounded-2xl border bg-white p-6 text-center text-slate-500">Loading jobs…</div>
-        ) : filtered.length === 0 ? (
-          <div className="rounded-2xl border bg-white p-6 text-center text-slate-500">
-            No jobs found for <b>{tab}</b>.
-          </div>
         ) : (
-          <div className="grid gap-3">
-            {filtered.map(ev => <JobCard key={ev.id} ev={ev} />)}
-          </div>
+          <CustomerView
+            loading={loading}
+            phone={phone}
+            setPhone={setPhone}
+            items={customerList}
+          />
         )}
-
-        <div className="mt-6 text-right text-xs text-slate-400">v11 • {todayStr}</div>
+        <div className="mt-8 text-xs text-slate-400">v10 • {ymd(now())}</div>
       </main>
     </div>
   );
 }
+
+/* --------------------------- Cleaner View --------------------------- */
+function CleanerView({ loading, tab, setTab, query, setQuery, items }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 mb-4">
+        <button
+          onClick={() => setTab("today")}
+          className={`px-3 py-1 rounded-full text-sm ${tab === "today" ? "bg-emerald-600 text-white" : "bg-white"}`}
+        >
+          Today
+        </button>
+        <button
+          onClick={() => setTab("week")}
+          className={`px-3 py-1 rounded-full text-sm ${tab === "week" ? "bg-emerald-600 text-white" : "bg-white"}`}
+        >
+          This Week
+        </button>
+        <button
+          onClick={() => setTab("all")}
+          className={`px-3 py-1 rounded-full text-sm ${tab === "all" ? "bg-emerald-600 text-white" : "bg-white"}`}
+        >
+          All
+        </button>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search client, address, notes…"
+          className="ml-3 text-sm bg-white rounded-md px-3 py-1.5 border w-64"
+        />
+      </div>
+
+      {loading ? (
+        <div className="text-slate-500">Loading jobs…</div>
+      ) : items.length === 0 ? (
+        <div className="text-slate-500">No jobs found for this view.</div>
+      ) : (
+        <ul className="space-y-4">
+          {items.map((j) => (
+            <li key={j.id} className="bg-white rounded-xl border shadow-sm p-4">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">
+                  {j.service}
+                </span>
+                <span className="text-sm text-slate-500">
+                  {j.date} {j.start && `• ${j.start}`}{j.end && `–${j.end}`}
+                </span>
+              </div>
+              <div className="mt-2 text-lg font-semibold">{j.client || "Unassigned"}</div>
+              <div className="mt-1 text-slate-600">{j.address || "No address on file"}</div>
+              {j.notes && <div className="mt-2 text-sm text-slate-500">Notes: {j.notes}</div>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/* -------------------------- Customer View -------------------------- */
+function CustomerView({ loading, phone, setPhone, items }) {
+  return (
+    <>
+      <div className="mb-4">
+        <label className="block text-sm font-medium mb-1">Enter your phone number</label>
+        <input
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder="e.g., last 4 digits"
+          className="text-sm bg-white rounded-md px-3 py-2 border w-64"
+          inputMode="numeric"
+        />
+        <div className="text-xs text-slate-500 mt-1">
+          We’ll show the cleans linked to that phone number.
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-slate-500">Loading…</div>
+      ) : !phone.replace(/\D/g, "") ? (
+        <div className="text-slate-500">Enter your phone number to view upcoming cleans.</div>
+      ) : items.length === 0 ? (
+        <div className="text-slate-500">No upcoming cleans found for that phone.</div>
+      ) : (
+        <ul className="space-y-4">
+          {items.map((j) => (
+            <li key={j.id} className="bg-white rounded-xl border shadow-sm p-4">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">
+                  {j.service}
+                </span>
+                <span className="text-sm text-slate-500">
+                  {j.date} {j.start && `• ${j.start}`}{j.end && `–${j.end}`}
+                </span>
+              </div>
+              <div className="mt-2 text-lg font-semibold">{j.client}</div>
+              <div className="mt-1 text-slate-600">{j.address || "No address on file"}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
