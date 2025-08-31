@@ -1,111 +1,151 @@
-// pages/api/jobs.js
-// Feeds the app with normalized JSON from your published-to-web Google Sheet CSV.
-
+// api/jobs.js
 export default async function handler(req, res) {
-  // 1) Try env var first; fallback to hard-coded string (leave empty if using only env var).
-  const JOBS_CSV = process.env.SHEET_CSV_URL || "";
-
-  if (!JOBS_CSV || JOBS_CSV.includes("https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv")) {
-    return res.status(500).json({ error: "CSV link not configured." });
-  }
-
   try {
-    // no-store avoids Vercel/edge caching old CSV
-    const r = await fetch(JOBS_CSV, { cache: "no-store" });
-    if (!r.ok) return res.status(r.status).json({ error: `Failed to fetch CSV (${r.status})` });
-
-    const text = await r.text();
-
-    // --- CSV → rows ---------------------------------------------------------
-    const lines = text.split(/\r?\n/).filter(Boolean);
-
-    // header row
-    const headerRaw = lines[0];
-    const headers = headerRaw.split(",").map(h => h.trim().replace(/^"+|"+$/g, ""));
-
-    // helper: unquote + unescape commas inside quotes
-    const splitCSVLine = (line) => {
-      const out = [];
-      let cur = "";
-      let inQ = false;
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-          // toggle quoted section or treat double quote inside quotes as literal
-          if (inQ && line[i + 1] === '"') {
-            cur += '"'; i++;
-          } else {
-            inQ = !inQ;
-          }
-        } else if (ch === "," && !inQ) {
-          out.push(cur);
-          cur = "";
-        } else {
-          cur += ch;
-        }
-      }
-      out.push(cur);
-      return out.map(v => v.replace(/^"+|"+$/g, "").trim());
-    };
-
-    // parse rows
-    const rows = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = splitCSVLine(lines[i]);
-      if (!cols.length) continue;
-      const obj = {};
-      headers.forEach((h, idx) => {
-        obj[h] = (cols[idx] ?? "").trim();
-      });
-      rows.push(obj);
+    // quick health ping: /api/jobs?ping=1
+    if (req.query.ping) {
+      return res.status(200).json({ ok: true, env: !!process.env.JOBS_CSV_URL });
     }
 
-    // --- Normalize & pass through all fields -------------------------------
-    // Your sheet columns (case-sensitive): 
-    // date, start, end, title, client, address, notes, client_phone, service_type, assigned_clean, status, price, paid, job_id
-    // We’ll keep ALL fields and also create a few friendly ones used by the app.
+    const csvUrl = process.env.JOBS_CSV_URL; // <-- set this in Vercel (Step 2)
+    if (!csvUrl) {
+      return res.status(500).json({ error: "Missing env JOBS_CSV_URL" });
+    }
 
-    const toNice = (s) => {
-      if (!s) return "";
-      return s
-        .replace(/_/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .replace(/\b\w/g, c => c.toUpperCase());
+    // fetch the published CSV (File ▸ Share ▸ Publish to web ▸ CSV link)
+    const r = await fetch(csvUrl, { cache: "no-store" });
+    if (!r.ok) {
+      return res.status(500).json({ error: `Failed to fetch CSV (${r.status})` });
+    }
+    const text = await r.text();
+
+    // minimal CSV parser that handles quoted commas
+    const rows = parseCSV(text);
+    if (!rows.length) return res.status(200).json({ events: [] });
+
+    // header row -> keys
+    const [headers, ...dataRows] = rows;
+    const key = (name) => {
+      const idx = headers.findIndex(
+        (h) => String(h || "").trim().toLowerCase() === name.toLowerCase()
+      );
+      return idx >= 0 ? idx : -1;
     };
 
-    const events = rows
-      .filter(r => r.date) // ignore blank lines
-      .map(r => {
-        const typeRaw = r.service_type || r.title || ""; // prefer service_type if present
-        const type = toNice(typeRaw);                   // “Standard Clean”, “Airbnb Turnover”, etc.
+    // expected sheet columns (case-insensitive):
+    // date, start, end, client, address, notes, service, client_phone, job_id
+    const iDate = key("date");
+    const iStart = key("start");
+    const iEnd = key("end");
+    const iClient = key("client");
+    const iAddress = key("address");
+    const iNotes = key("notes");
+    const iService = key("service");
+    const iPhone = key("client_phone");
+    const iJobId = key("job_id");
 
+    const events = dataRows
+      .map((cols, i) => {
+        const date = get(cols, iDate);
+        const client = get(cols, iClient);
         // Build a stable id
-        const id = `${r.date}-${(r.client || "Client").replace(/\W+/g, "_")}-${type.replace(/\W+/g, "_")}`;
-
+        const safeClient = (client || "").trim().replace(/\s+/g, "_");
+        const serviceRaw = get(cols, iService);
+        const service = labelServiceType(serviceRaw);
         return {
-          id,
-          date: r.date,                 // YYYY-MM-DD (from App Script)
-          start: r.start || "",
-          end: r.end || "",
-          client: r.client || "",
-          title: type || "",            // UI uses this as the badge
-          address: r.address || "",
-          notes: r.notes || "",
-          client_phone: r.client_phone || "",
-          assigned_clean: r.assigned_clean || "",
-          status: r.status || "",
-          price: r.price || "",
-          paid: r.paid || "",
-          job_id: r.job_id || "",
-          // also include the raw row in case we want more later
-          _raw: r,
+          id: `${date || "no-date"}-${safeClient || "no-client"}-${service.replace(/\s+/g, "_")}`,
+          date,
+          start: get(cols, iStart),
+          end: get(cols, iEnd),
+          client,
+          title: service, // for compatibility with the frontend that reads e.title -> labelServiceType
+          service,        // explicit
+          address: get(cols, iAddress),
+          notes: get(cols, iNotes),
+          client_phone: get(cols, iPhone),
+          job_id: get(cols, iJobId),
         };
-      });
+      })
+      // keep only rows that have a date and client
+      .filter((e) => e.date && e.client);
 
     return res.status(200).json({ events });
-
-  } catch (err) {
-    return res.status(500).json({ error: String(err && err.message || err) });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
   }
+}
+
+/* ---------- helpers ---------- */
+function get(arr, idx) {
+  if (idx < 0) return "";
+  return (arr[idx] ?? "").toString().trim();
+}
+
+function labelServiceType(raw) {
+  const t = (raw || "").toLowerCase();
+  if (t.includes("air") || t.includes("turn")) return "Airbnb Turnover";
+  if (t.includes("deep")) return "Deep Clean";
+  if (t.includes("move")) return "Move-In/Out";
+  if (t.includes("post") || t.includes("reno")) return "Post-Renovation";
+  if (!t) return "Standard Clean";
+  return capitalizeWords(raw);
+}
+
+function capitalizeWords(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let val = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+
+    if (c === '"' && inQuotes && next === '"') {
+      // escaped quote
+      val += '"';
+      i++;
+      continue;
+    }
+
+    if (c === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (c === "," && !inQuotes) {
+      row.push(val);
+      val = "";
+      continue;
+    }
+
+    if ((c === "\n" || c === "\r") && !inQuotes) {
+      // finalize row if we hit a line break
+      if (val.length || row.length) {
+        row.push(val);
+        rows.push(row);
+      }
+      row = [];
+      val = "";
+
+      // swallow \r\n pairs
+      if (c === "\r" && next === "\n") i++;
+      continue;
+    }
+
+    val += c;
+  }
+
+  // push last cell
+  if (val.length || row.length) {
+    row.push(val);
+    rows.push(row);
+  }
+
+  return rows.filter((r) => r.length > 0);
 }
