@@ -1,93 +1,111 @@
 // pages/api/jobs.js
-// Simplest version: reads your Google Sheet "Publish to web (CSV)" directly,
-// no environment variables needed.
+// Feeds the app with normalized JSON from your published-to-web Google Sheet CSV.
 
 export default async function handler(req, res) {
-  // 👉👉👉 PASTE YOUR PUBLISHED CSV LINK BETWEEN THE QUOTES:
-  const JOBS_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv"; // PASTE HERE
+  // 1) Try env var first; fallback to hard-coded string (leave empty if using only env var).
+  const JOBS_CSV = process.env.SHEET_CSV_URL || "";
 
-  if (!JOBS_CSV || !JOBS_CSV.startsWith("http")) {
+  if (!JOBS_CSV || JOBS_CSV.includes("https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv")) {
     return res.status(500).json({ error: "CSV link not configured." });
   }
 
   try {
-    const r = await fetch(JOBS_CSV, { headers: { "cache-control": "no-store" } });
-    if (!r.ok) {
-      return res.status(r.status).json({ error: `Failed to fetch CSV (${r.status})` });
+    // no-store avoids Vercel/edge caching old CSV
+    const r = await fetch(JOBS_CSV, { cache: "no-store" });
+    if (!r.ok) return res.status(r.status).json({ error: `Failed to fetch CSV (${r.status})` });
+
+    const text = await r.text();
+
+    // --- CSV → rows ---------------------------------------------------------
+    const lines = text.split(/\r?\n/).filter(Boolean);
+
+    // header row
+    const headerRaw = lines[0];
+    const headers = headerRaw.split(",").map(h => h.trim().replace(/^"+|"+$/g, ""));
+
+    // helper: unquote + unescape commas inside quotes
+    const splitCSVLine = (line) => {
+      const out = [];
+      let cur = "";
+      let inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          // toggle quoted section or treat double quote inside quotes as literal
+          if (inQ && line[i + 1] === '"') {
+            cur += '"'; i++;
+          } else {
+            inQ = !inQ;
+          }
+        } else if (ch === "," && !inQ) {
+          out.push(cur);
+          cur = "";
+        } else {
+          cur += ch;
+        }
+      }
+      out.push(cur);
+      return out.map(v => v.replace(/^"+|"+$/g, "").trim());
+    };
+
+    // parse rows
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = splitCSVLine(lines[i]);
+      if (!cols.length) continue;
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = (cols[idx] ?? "").trim();
+      });
+      rows.push(obj);
     }
-    const csv = await r.text();
-    const rows = parseCSV(csv);
-    const events = rows.map(normalizeRow).filter(e => e.date && e.client);
 
-    res.setHeader("cache-control", "no-store");
+    // --- Normalize & pass through all fields -------------------------------
+    // Your sheet columns (case-sensitive): 
+    // date, start, end, title, client, address, notes, client_phone, service_type, assigned_clean, status, price, paid, job_id
+    // We’ll keep ALL fields and also create a few friendly ones used by the app.
+
+    const toNice = (s) => {
+      if (!s) return "";
+      return s
+        .replace(/_/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/\b\w/g, c => c.toUpperCase());
+    };
+
+    const events = rows
+      .filter(r => r.date) // ignore blank lines
+      .map(r => {
+        const typeRaw = r.service_type || r.title || ""; // prefer service_type if present
+        const type = toNice(typeRaw);                   // “Standard Clean”, “Airbnb Turnover”, etc.
+
+        // Build a stable id
+        const id = `${r.date}-${(r.client || "Client").replace(/\W+/g, "_")}-${type.replace(/\W+/g, "_")}`;
+
+        return {
+          id,
+          date: r.date,                 // YYYY-MM-DD (from App Script)
+          start: r.start || "",
+          end: r.end || "",
+          client: r.client || "",
+          title: type || "",            // UI uses this as the badge
+          address: r.address || "",
+          notes: r.notes || "",
+          client_phone: r.client_phone || "",
+          assigned_clean: r.assigned_clean || "",
+          status: r.status || "",
+          price: r.price || "",
+          paid: r.paid || "",
+          job_id: r.job_id || "",
+          // also include the raw row in case we want more later
+          _raw: r,
+        };
+      });
+
     return res.status(200).json({ events });
+
   } catch (err) {
-    return res.status(500).json({ error: "Server error", detail: String(err?.message || err) });
+    return res.status(500).json({ error: String(err && err.message || err) });
   }
-}
-
-/* ---------- helpers ---------- */
-
-function parseCSV(text) {
-  const lines = text.replace(/\r/g, "").split("\n").filter(Boolean);
-  if (!lines.length) return [];
-  const headers = split(lines[0]).map(h => h.trim().toLowerCase());
-  const out = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = split(lines[i]);
-    const row = {};
-    headers.forEach((h, idx) => (row[h] = (cols[idx] || "").trim()));
-    out.push(row);
-  }
-  return out;
-}
-function split(line) {
-  const out = [];
-  let cur = "", q = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (q && line[i + 1] === '"') { cur += '"'; i++; } else { q = !q; }
-    } else if (ch === "," && !q) { out.push(cur); cur = ""; }
-    else { cur += ch; }
-  }
-  out.push(cur);
-  return out;
-}
-
-function normalizeRow(r) {
-  const get = (n) => r[n] ?? r[n?.toLowerCase?.()] ?? "";
-
-  const date   = get("date");
-  const start  = get("start");
-  const end    = get("end");
-  const client = get("client") || get("customer") || "";
-  const title  = get("title");
-  const addr   = get("address");
-  const notes  = get("notes");
-  const phone  = get("client_phone") || get("phone") || "";
-  let service  = get("service_type");
-
-  // If service_type empty, guess from title text
-  if (!service) {
-    const t = (title || "").toLowerCase();
-    if (t.includes("air") && (t.includes("bnb") || t.includes("turn"))) service = "Airbnb";
-    else if (t.includes("deep")) service = "Deep Clean";
-    else service = "Standard";
-  }
-
-  const id = `${date || "no-date"}-${(client || "").replace(/\s+/g,"_")}-${service.replace(/\s+/g,"_")}`;
-
-  return {
-    id,
-    date,
-    start,
-    end,
-    client,
-    title: service,    // what the UI shows as the type
-    address: addr,     // will show if your Jobs sheet’s Address column has values
-    notes,
-    client_phone: phone,
-    job_id: "",        // reserved for later
-  };
 }
