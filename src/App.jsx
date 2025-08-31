@@ -1,65 +1,65 @@
 // src/App.jsx
 import { useEffect, useMemo, useState } from "react";
 
-/* -------------------------- date/time helpers -------------------------- */
-const now = () => new Date();
+/* ---------------- helpers ---------------- */
 const ymd = (d) => d.toISOString().slice(0, 10);
-
-function parseTime(hhmm, baseDate) {
-  if (!hhmm) return null;
-  const [h, m] = hhmm.split(":").map(Number);
-  const d = new Date(baseDate);
-  d.setHours(h || 0, m || 0, 0, 0);
-  return d;
-}
-function sameDay(a, b) {
-  return ymd(a) === ymd(b);
-}
-function inThisWeek(d, base = now()) {
-  const b = new Date(base);
-  const dow = b.getDay(); // 0 Sun..6 Sat
-  const start = new Date(b);
-  start.setDate(b.getDate() - dow);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 7);
-  return d >= start && d < end;
-}
-function labelServiceType(raw) {
+const todayStr = ymd(new Date());
+const sameDay = (d) => (d || "").slice(0, 10) === todayStr;
+const inThisWeek = (dateStr) => {
+  if (!dateStr) return false;
+  const base = new Date();
+  const dow = base.getDay();
+  const weekStart = new Date(base);
+  weekStart.setDate(base.getDate() - dow);
+  weekStart.setHours(0, 0, 0, 0);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 7);
+  const d = new Date(dateStr);
+  return d >= weekStart && d < weekEnd;
+};
+const labelServiceType = (raw) => {
   const t = (raw || "").toLowerCase();
   if (t.includes("air") || t.includes("turn")) return "Airbnb Turnover";
   if (t.includes("deep")) return "Deep Clean";
   if (t.includes("move")) return "Move-In/Out";
   if (t.includes("post") || t.includes("reno")) return "Post-Renovation";
   return "Standard Clean";
-}
+};
 
-/* ------------------------------- App ----------------------------------- */
+/* ---------------- app ---------------- */
 export default function App() {
-  const [mode, setMode] = useState("cleaner"); // "cleaner" | "customer"
-  const [tab, setTab] = useState("today");     // "today" | "week" | "all"
-  const [loading, setLoading] = useState(true);
-  const [jobs, setJobs] = useState([]);
+  const [mode, setMode] = useState("cleaner"); // cleaner | customer
+  const [tab, setTab] = useState("today");     // today | week | all
   const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  // Customer sign-in
+  // raw from API + normalized
+  const [raw, setRaw] = useState([]);          // raw events array
+  const [jobs, setJobs] = useState([]);        // normalized events
+  const [error, setError] = useState("");
+
+  // customer phone filter
   const [phone, setPhone] = useState("");
   const phoneDigits = phone.replace(/\D/g, "");
 
   useEffect(() => {
-    const load = async () => {
+    (async () => {
       setLoading(true);
+      setError("");
       try {
         const res = await fetch(`/api/jobs?ts=${Date.now()}`, { cache: "no-store" });
         if (!res.ok) throw new Error(`API ${res.status}`);
         const data = await res.json();
-        const events = Array.isArray(data?.events) ? data.events : [];
 
+        const events = Array.isArray(data?.events) ? data.events : [];
+        setRaw(events);
+
+        // normalize gently; keep everything even if fields are missing
         const normalized = events.map((e, i) => {
-          const dateObj = e.date ? new Date(e.date) : now();
+          const date = e.date || ""; // expected "YYYY-MM-DD"
           return {
             id: e.id || `row-${i}`,
-            date: e.date || ymd(dateObj),
+            date,
             start: e.start || "",
             end: e.end || "",
             client: (e.client || "").trim(),
@@ -67,36 +67,31 @@ export default function App() {
             notes: e.notes || "",
             client_phone: (e.client_phone || "").trim(),
             service: labelServiceType(e.title || e.service_type || ""),
-            startDateTime: parseTime(e.start, dateObj) || dateObj,
           };
         });
 
-        // sort by datetime
-        normalized.sort((a, b) => a.startDateTime - b.startDateTime);
-
+        // If normalization produced zero but raw had items, fall back to raw passthrough view
         setJobs(normalized);
         setLoading(false);
 
-        // If "Today" would be empty, auto-fallback to "All" (first load)
-        const todayCount = normalized.filter((j) => sameDay(new Date(j.date), now())).length;
-        if (todayCount === 0) setTab("all");
+        // If "Today" would be empty but there are jobs overall, auto-switch to "all"
+        if (normalized.length && !normalized.some((j) => sameDay(j.date))) {
+          setTab("all");
+        }
       } catch (err) {
-        console.error(err);
-        setJobs([]);
         setLoading(false);
+        setError(err.message || String(err));
+        setRaw([]);
+        setJobs([]);
       }
-    };
-    load();
+    })();
   }, []);
 
-  /* -------------------- CLEANER: filter + search -------------------- */
-  const cleanerList = useMemo(() => {
+  /* cleaner filters */
+  const filteredCleaner = useMemo(() => {
     let pool = jobs;
-    if (tab === "today") {
-      pool = pool.filter((j) => sameDay(new Date(j.date), now()));
-    } else if (tab === "week") {
-      pool = pool.filter((j) => inThisWeek(new Date(j.date)));
-    }
+    if (tab === "today") pool = pool.filter((j) => sameDay(j.date));
+    if (tab === "week") pool = pool.filter((j) => inThisWeek(j.date));
     const term = query.trim().toLowerCase();
     if (!term) return pool;
     return pool.filter((j) =>
@@ -104,21 +99,21 @@ export default function App() {
     );
   }, [jobs, tab, query]);
 
-  /* -------------------- CUSTOMER: phone filter ---------------------- */
-  const customerList = useMemo(() => {
+  /* customer filter */
+  const filteredCustomer = useMemo(() => {
     if (!phoneDigits) return [];
-    return jobs.filter((j) => (j.client_phone || "").replace(/\D/g, "").includes(phoneDigits));
+    return jobs.filter((j) =>
+      (j.client_phone || "").replace(/\D/g, "").includes(phoneDigits)
+    );
   }, [jobs, phoneDigits]);
 
-  /* ------------------------------- UI -------------------------------- */
   return (
     <div className="min-h-screen bg-emerald-50">
-      {/* header with portal toggle */}
+      {/* header */}
       <header className="sticky top-0 z-10 backdrop-blur bg-emerald-50/80 border-b">
         <div className="mx-auto max-w-5xl px-4 py-3 flex items-center gap-3">
           <img src="/logo.png" alt="MOR" className="h-7 w-7 rounded-full ring-2 ring-emerald-200" />
           <div className="font-semibold">M.O.R. Clean Daytona</div>
-
           <div className="ml-auto flex items-center gap-2">
             <button
               onClick={() => setMode("cleaner")}
@@ -136,7 +131,16 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-6">
+      {/* debug strip so we SEE what's happening */}
+      <div className="mx-auto max-w-5xl px-4 py-2 text-xs text-slate-500">
+        {loading ? "Loading…" : (
+          <>
+            API events: <b>{raw.length}</b> • normalized: <b>{jobs.length}</b> • today: <b>{jobs.filter(j=>sameDay(j.date)).length}</b> {error && <>• error: <span className="text-rose-600">{error}</span></>}
+          </>
+        )}
+      </div>
+
+      <main className="mx-auto max-w-5xl px-4 pb-12">
         {mode === "cleaner" ? (
           <CleanerView
             loading={loading}
@@ -144,24 +148,27 @@ export default function App() {
             setTab={setTab}
             query={query}
             setQuery={setQuery}
-            items={cleanerList}
+            items={filteredCleaner}
+            raw={raw}
+            hasNormalized={jobs.length > 0}
           />
         ) : (
           <CustomerView
             loading={loading}
             phone={phone}
             setPhone={setPhone}
-            items={customerList}
+            items={filteredCustomer}
           />
         )}
-        <div className="mt-8 text-xs text-slate-400">v10 • {ymd(now())}</div>
       </main>
+
+      <footer className="text-center text-xs text-slate-400 py-6">v11 • {todayStr}</footer>
     </div>
   );
 }
 
-/* --------------------------- Cleaner View --------------------------- */
-function CleanerView({ loading, tab, setTab, query, setQuery, items }) {
+/* -------------- Cleaner View (with raw fallback renderer) -------------- */
+function CleanerView({ loading, tab, setTab, query, setQuery, items, raw, hasNormalized }) {
   return (
     <>
       <div className="flex items-center gap-2 mb-4">
@@ -193,9 +200,7 @@ function CleanerView({ loading, tab, setTab, query, setQuery, items }) {
 
       {loading ? (
         <div className="text-slate-500">Loading jobs…</div>
-      ) : items.length === 0 ? (
-        <div className="text-slate-500">No jobs found for this view.</div>
-      ) : (
+      ) : items.length > 0 ? (
         <ul className="space-y-4">
           {items.map((j) => (
             <li key={j.id} className="bg-white rounded-xl border shadow-sm p-4">
@@ -204,7 +209,7 @@ function CleanerView({ loading, tab, setTab, query, setQuery, items }) {
                   {j.service}
                 </span>
                 <span className="text-sm text-slate-500">
-                  {j.date} {j.start && `• ${j.start}`}{j.end && `–${j.end}`}
+                  {j.date || "No date"} {j.start && `• ${j.start}`}{j.end && `–${j.end}`}
                 </span>
               </div>
               <div className="mt-2 text-lg font-semibold">{j.client || "Unassigned"}</div>
@@ -213,12 +218,30 @@ function CleanerView({ loading, tab, setTab, query, setQuery, items }) {
             </li>
           ))}
         </ul>
+      ) : hasNormalized ? (
+        <div className="text-slate-500">No jobs match this filter.</div>
+      ) : raw.length > 0 ? (
+        // RAW FALLBACK: show whatever fields exist so something appears even if parsing changes
+        <>
+          <div className="text-amber-700 text-sm mb-2">
+            Showing RAW data (parsing fallback). We’ll still see your jobs.
+          </div>
+          <ul className="space-y-3">
+            {raw.map((r, i) => (
+              <li key={r.id || i} className="bg-white rounded-xl border shadow-sm p-3">
+                <pre className="text-xs overflow-auto">{JSON.stringify(r, null, 2)}</pre>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <div className="text-slate-500">No jobs found.</div>
       )}
     </>
   );
 }
 
-/* -------------------------- Customer View -------------------------- */
+/* ---------------------------- Customer View ---------------------------- */
 function CustomerView({ loading, phone, setPhone, items }) {
   return (
     <>
@@ -251,10 +274,10 @@ function CustomerView({ loading, phone, setPhone, items }) {
                   {j.service}
                 </span>
                 <span className="text-sm text-slate-500">
-                  {j.date} {j.start && `• ${j.start}`}{j.end && `–${j.end}`}
+                  {j.date || "No date"} {j.start && `• ${j.start}`}{j.end && `–${j.end}`}
                 </span>
               </div>
-              <div className="mt-2 text-lg font-semibold">{j.client}</div>
+              <div className="mt-2 text-lg font-semibold">{j.client || "Client"}</div>
               <div className="mt-1 text-slate-600">{j.address || "No address on file"}</div>
             </li>
           ))}
@@ -263,4 +286,3 @@ function CustomerView({ loading, phone, setPhone, items }) {
     </>
   );
 }
-
