@@ -5,7 +5,7 @@
 
 export default async function handler(req, res) {
   // PASTE your "Publish to web → CSV" link here
-  const JOBS_CSV = "PASTE_YOUR_GOOGLE_SHEET_CSV_LINK_HERE";
+  const JOBS_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv";
 
   const url = process.env.SHEET_CSV_URL || JOBS_CSV;
   if (!url || url.includes("PASTE_YOUR_GOOGLE_SHEET_CSV_LINK_HERE")) {
