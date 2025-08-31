@@ -1,125 +1,140 @@
-// api/jobs.js
-// Vercel Serverless Function that reads your published Google Sheet (CSV) and returns JSON for the app.
+// pages/api/jobs.js
+// Reads your Google Sheet (published as CSV) and normalizes rows for the app.
+// Put the published CSV link in a Vercel env var named JOBS_CSV_URL.
 
-const PUBLISHED_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTaf89EtB8skSN30S9c0CuVMVqqrHhQ2OhHlxWuDmLDCO8hB9w10yMz8Us11ZstNug3PP_58R4uq1zX/pub?gid=1976931574&single=true&output=csv"; // <= paste your Google Sheet "Publish to web" CSV link here
-const DAYS_AHEAD = 60; // how far forward to show jobs
-const DAYS_PAST  = 0;  // how far back to include (0 = only today+)
+export const config = { runtime: "edge" }; // works on Vercel Edge
 
-// --- tiny CSV parser that handles quotes ---
-function parseCSV(csvText) {
+// VERY small CSV parser that handles quoted commas/newlines.
+function parseCSV(text) {
   const rows = [];
-  let i = 0, field = "", row = [], inQuotes = false;
+  let row = [];
+  let val = "";
+  let q = false;
 
-  while (i < csvText.length) {
-    const c = csvText[i];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i + 1];
 
-    if (inQuotes) {
-      if (c === '"') {
-        if (csvText[i + 1] === '"') { field += '"'; i += 2; continue; }
-        inQuotes = false; i++; continue;
-      } else { field += c; i++; continue; }
+    if (c === '"') {
+      if (q && n === '"') { val += '"'; i++; }
+      else { q = !q; }
+    } else if (c === ',' && !q) {
+      row.push(val); val = "";
+    } else if ((c === '\n' || c === '\r') && !q) {
+      if (val !== "" || row.length) { row.push(val); rows.push(row); row = []; val = ""; }
+      // swallow \r\n pairs
+      if (c === '\r' && n === '\n') i++;
+    } else {
+      val += c;
     }
-
-    if (c === '"') { inQuotes = true; i++; continue; }
-    if (c === ',') { row.push(field); field = ""; i++; continue; }
-    if (c === '\r') { i++; continue; }
-    if (c === '\n') { row.push(field); rows.push(row); field = ""; row = []; i++; continue; }
-
-    field += c; i++;
   }
-  row.push(field); rows.push(row);
+  if (val !== "" || row.length) { row.push(val); rows.push(row); }
   return rows;
 }
 
-// normalize header names like "Client Phone" -> "client_phone"
-function normHeader(h) {
-  return String(h || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^\w_]+/g, "");
-}
-
-// expect headers like: Date, Start, End, Title, Client, Address, Notes, Client Phone, Service Type
-function rowsToEvents(rows) {
-  if (!rows || rows.length === 0) return [];
-  const header = rows[0].map(normHeader);
-  const idx = (name) => header.indexOf(name);
-
-  const iDate   = idx("date");
-  const iStart  = idx("start");
-  const iEnd    = idx("end");
-  const iTitle  = idx("title");
-  const iClient = idx("client");
-  const iAddr   = idx("address");
-  const iNotes  = idx("notes");
-  const iPhone  = idx("client_phone");
-  const iSvc    = idx("service_type");
-
-  const out = [];
-  for (let r = 1; r < rows.length; r++) {
-    const row = rows[r];
-    const date  = (row[iDate]  || "").trim();
-    if (!date) continue; // skip empty rows
-    const start = (row[iStart] || "").trim();
-    const end   = (row[iEnd]   || "").trim();
-    const title = (row[iTitle] || "Clean").trim();
-    const client= (row[iClient]|| "").trim();
-    const addr  = (row[iAddr]  || "").trim();
-    const notes = (row[iNotes] || "").trim();
-    const phone = (row[iPhone] || "").trim();
-    const svc   = (row[iSvc]   || "").trim();
-
-    // build a stable id (date-client-title)
-    const id = `${date}-${client.replace(/\s+/g,"_")}-${title.replace(/\s+/g,"_")}`;
-
-    out.push({ id, date, start, end, title, client, address: addr, notes, client_phone: phone, service_type: svc });
+function firstNonEmpty(obj, keys, fallback = "") {
+  for (const k of keys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
   }
-  return out;
+  return fallback;
 }
 
-function isoToday() {
-  return new Date().toISOString().slice(0, 10);
+function makeId(date, client, title) {
+  const clean = (s) => String(s || "").toLowerCase().trim().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+  return `${clean(date)}-${clean(client)}-${clean(title)}`;
 }
 
-function isoNDaysFromNow(n) {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-export default async function handler(req, res) {
-  // allow GET only
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
+export default async function handler(req) {
   try {
-    const resp = await fetch(PUBLISHED_CSV_URL, { cache: "no-store" });
-    if (!resp.ok) {
-      const txt = await resp.text();
-      return res.status(502).json({ error: "Failed to fetch CSV", status: resp.status, body: txt.slice(0, 500) });
+    const url = process.env.JOBS_CSV_URL;
+    if (!url) {
+      return new Response(JSON.stringify({ error: "Missing JOBS_CSV_URL env var" }), { status: 500 });
     }
 
-    const csv = await resp.text();
-    const rows = parseCSV(csv);
-    let events = rowsToEvents(rows);
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      return new Response(JSON.stringify({ error: `Failed to fetch CSV (${res.status})` }), { status: 500 });
+    }
 
-    // date window
-    const startISO = isoNDaysFromNow(-DAYS_PAST);   // usually today
-    const endISO   = isoNDaysFromNow(DAYS_AHEAD);   // default 60 days
-    events = events
-      .filter(e => e.date >= startISO && e.date <= endISO)
-      .sort((a, b) => a.date.localeCompare(b.date));
+    const text = await res.text();
+    const rows = parseCSV(text);
+    if (!rows.length) return new Response(JSON.stringify({ events: [] }), { status: 200 });
 
-    // CORS headers (so your app can call from the browser)
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    // Build header map (case-insensitive)
+    const header = rows[0].map(h => String(h || "").trim());
+    const idx = Object.fromEntries(header.map((h, i) => [h.toLowerCase(), i]));
 
-    return res.status(200).json({ events, window: { startISO, endISO }, count: events.length });
-  } catch (err) {
-    return res.status(500).json({ error: String(err?.message || err) });
+    // Helper to read a cell by any of several possible header names
+    const getCell = (r, names = []) => {
+      for (const name of names) {
+        const i = idx[name.toLowerCase()];
+        if (i !== undefined) {
+          const v = r[i];
+          if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+        }
+      }
+      return "";
+    };
+
+    // Accepted header variants
+    const DATE_KEYS       = ["date", "start_date"];
+    const START_KEYS      = ["start", "start_time", "window_start"];
+    const END_KEYS        = ["end", "end_time", "window_end"];
+    const CLIENT_KEYS     = ["client", "customer", "customer_name", "name"];
+    const TITLE_KEYS      = ["title", "job", "service", "service_type", "type"];
+    const ADDRESS_KEYS    = ["address", "customer_address", "addr", "location_address"];
+    const NOTES_KEYS      = ["notes", "note", "memo", "details"];
+    const PHONE_KEYS      = ["client_phone", "phone", "customer_phone"];
+    const TASKS_KEYS      = ["tasks"]; // pipe-separated optional
+
+    const events = [];
+
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+
+      const date = getCell(row, DATE_KEYS);
+      if (!date) continue; // skip empty row
+
+      const start   = getCell(row, START_KEYS);
+      const end     = getCell(row, END_KEYS);
+      const client  = getCell(row, CLIENT_KEYS);
+      const rawTitle= getCell(row, TITLE_KEYS);
+      const address = getCell(row, ADDRESS_KEYS);
+      const notes   = getCell(row, NOTES_KEYS);
+      const phone   = getCell(row, PHONE_KEYS);
+      const tasksRaw= getCell(row, TASKS_KEYS);
+
+      // Service: prefer dedicated service/service_type, otherwise title, fallback "Clean"
+      const service = firstNonEmpty(
+        { service: getCell(row, ["service"]), service_type: getCell(row, ["service_type"]), type: getCell(row, ["type"]), title: rawTitle },
+        ["service", "service_type", "type", "title"],
+        "Clean"
+      );
+
+      const title   = firstNonEmpty({ title: rawTitle, service }, ["title", "service"], "Clean");
+
+      const id = makeId(date, client, title);
+
+      events.push({
+        id,
+        date,
+        start,
+        end,
+        title,           // what shows as the job name
+        service,         // more explicit service type
+        client,
+        address,
+        notes,
+        client_phone: phone,
+        tasks: tasksRaw ? String(tasksRaw).split("|").map(s => s.trim()).filter(Boolean) : [],
+      });
+    }
+
+    return new Response(JSON.stringify({ events }), {
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+      status: 200,
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
   }
 }
