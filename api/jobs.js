@@ -1,93 +1,87 @@
-// api/jobs.js
-// Feeds the app from your Google Sheet CSV ("Publish to web" -> CSV).
+// pages/api/jobs.js
+// Feeds the app with jobs from your Google Sheet CSV (Publish to web → CSV).
+// Normalizes headers and tolerates empty cells.
 
 export default async function handler(req, res) {
   try {
-    const url = process.env.SHEET_CSV_URL || process.env.JOBS_CSV;
-    if (!url) return res.status(500).json({ error: "CSV link not configured." });
+    // ------------- PASTE YOUR CSV LINK HERE (Publish to web → CSV) -------------
+    const CSV_URL = 'PASTE_YOUR_GOOGLE_SHEET_CSV_LINK_HERE';
 
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) return res.status(401).json({ error: `Failed to fetch CSV (${r.status})` });
+    const url = CSV_URL;
+    if (!url || url.includes('PASTE_YOUR_GOOGLE_SHEET_CSV_LINK_HERE')) {
+      return res.status(500).json({ error: 'CSV not configured' });
+    }
+
+    // Never serve a cached copy during debugging
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) {
+      return res.status(500).json({ error: `Failed to fetch CSV (${r.status})` });
+    }
 
     const csv = await r.text();
 
-    // --- CSV parse (tiny, resilient) ---
-    const lines = csv.split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) return res.json({ events: [] });
+    // ---- Parse CSV (very forgiving) ----
+    const lines = csv.trim().split(/\r?\n/);
+    if (lines.length < 2) return res.status(200).json({ events: [] });
 
-    // Normalize headers: "Client Phone" -> "client_phone"
-    const rawHeaders = splitCSVLine(lines[0]);
-    const headers = rawHeaders.map(h => slug(h));
+    const rawHeaders = lines[0].split(',').map(h => h.trim().toLowerCase());
 
-    const rows = lines.slice(1).map(line => {
-      const cells = splitCSVLine(line);
-      const obj = {};
-      headers.forEach((h, i) => { obj[h] = (cells[i] || "").trim(); });
-      return obj;
-    });
+    // Header normalizer: map whatever is in the sheet to the keys our app expects
+    const mapHeader = (h) => {
+      if (/^date$/i.test(h)) return 'date';
+      if (/^start$/i.test(h)) return 'start';
+      if (/^end$/i.test(h)) return 'end';
+      if (/^client$/i.test(h)) return 'client';
+      if (/^address$/i.test(h)) return 'address';
+      if (/^notes?$/i.test(h)) return 'notes';
+      if (/^client[_\s-]*phone$/i.test(h)) return 'client_phone';
+      if (/^service[_\s-]*type$/i.test(h)) return 'title';
+      if (/^assigned[_\s-]*clean(er)?$/i.test(h)) return 'assigned_cleaner';
+      if (/^status$/i.test(h)) return 'status';
+      if (/^price$/i.test(h)) return 'price';
+      if (/^paid?$/i.test(h)) return 'paid';
+      // allow your old “title” to pass through too
+      if (/^title$/i.test(h)) return 'title';
+      return h;
+    };
+    const headers = rawHeaders.map(mapHeader);
 
-    // Map to event objects the app expects
-    const events = rows.map((r) => {
-      const digits = (v) => (v || "").replace(/[^\d]/g, "");
-      return {
-        id: buildId(r),
-        date: r.date || r.start_date || "",
-        start: r.start || r.start_time || "",
-        end: r.end || r.end_time || "",
-        client: r.client || r.customer || "",
-        title: r.title || r.service_type || "",
-        address: r.address || "",
-        notes: r.notes || "",
-        client_phone: digits(r.client_phone || r["phone"] || r["client_phone_number"] || ""),
-        service_type: r.service_type || r.title || "",
-        assigned_cleaner: r.assigned_cleaner || r.cleaner || "",
-        status: r.status || "",
-        price: r.price || "",
-        paid: r.paid || "",
-      };
-    });
+    const idx = (name) => headers.indexOf(name);
 
-    return res.json({ events });
-  } catch (e) {
-    return res.status(500).json({ error: "Server error", detail: String(e) });
-  }
-}
+    const events = [];
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(',').map(c => c.trim());
+      if (!row.length) continue;
 
-// --- helpers ---
+      const date  = row[idx('date')] || '';
+      const start = row[idx('start')] || '';
+      const end   = row[idx('end')] || '';
+      const client = row[idx('client')] || '';
+      const address = row[idx('address')] || '';
+      const notes = row[idx('notes')] || '';
+      const client_phone = (row[idx('client_phone')] || '').replace(/\D/g, ''); // digits only
+      const title = row[idx('title')] || 'Standard Clean'; // service type
 
-function splitCSVLine(line) {
-  // Handles commas inside quotes
-  const out = [];
-  let cur = "";
-  let inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQ && line[i + 1] === '"') {
-        cur += '"'; i++;
-      } else {
-        inQ = !inQ;
-      }
-    } else if (ch === "," && !inQ) {
-      out.push(cur); cur = "";
-    } else {
-      cur += ch;
+      // Skip hopelessly empty lines
+      if (!date && !client) continue;
+
+      // Build an id that’s human-ish if possible
+      const safeClient = client
+        ? client.replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '')
+        : 'Client';
+
+      const safeTitle = title.replace(/[^\p{L}\p{N}]+/gu, '_');
+
+      events.push({
+        id: `${date || 'NA'}-${safeClient}-${safeTitle}`,
+        date, start, end, client, title, address, notes, client_phone,
+        job_id: '' // optional future field
+      });
     }
+
+    return res.status(200).json({ events });
+  } catch (e) {
+    console.error('jobs API error:', e);
+    return res.status(500).json({ error: 'API crashed' });
   }
-  out.push(cur);
-  return out;
-}
-
-function slug(s) {
-  return String(s || "")
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^\w]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "");
-}
-
-function buildId(r) {
-  const safe = (v) => String(v || "").trim().replace(/\s+/g, "_");
-  return `${r.date || ""}-${safe(r.client || r.address || "Client")}-${safe(r.service_type || r.title || "Service")}`;
 }
