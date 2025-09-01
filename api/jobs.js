@@ -1,151 +1,93 @@
 // api/jobs.js
+// Feeds the app from your Google Sheet CSV ("Publish to web" -> CSV).
+
 export default async function handler(req, res) {
   try {
-    // quick health ping: /api/jobs?ping=1
-    if (req.query.ping) {
-      return res.status(200).json({ ok: true, env: !!process.env.JOBS_CSV_URL });
-    }
+    const url = process.env.SHEET_CSV_URL || process.env.JOBS_CSV;
+    if (!url) return res.status(500).json({ error: "CSV link not configured." });
 
-    const csvUrl = process.env.JOBS_CSV_URL; // <-- set this in Vercel (Step 2)
-    if (!csvUrl) {
-      return res.status(500).json({ error: "Missing env JOBS_CSV_URL" });
-    }
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) return res.status(401).json({ error: `Failed to fetch CSV (${r.status})` });
 
-    // fetch the published CSV (File ▸ Share ▸ Publish to web ▸ CSV link)
-    const r = await fetch(csvUrl, { cache: "no-store" });
-    if (!r.ok) {
-      return res.status(500).json({ error: `Failed to fetch CSV (${r.status})` });
-    }
-    const text = await r.text();
+    const csv = await r.text();
 
-    // minimal CSV parser that handles quoted commas
-    const rows = parseCSV(text);
-    if (!rows.length) return res.status(200).json({ events: [] });
+    // --- CSV parse (tiny, resilient) ---
+    const lines = csv.split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) return res.json({ events: [] });
 
-    // header row -> keys
-    const [headers, ...dataRows] = rows;
-    const key = (name) => {
-      const idx = headers.findIndex(
-        (h) => String(h || "").trim().toLowerCase() === name.toLowerCase()
-      );
-      return idx >= 0 ? idx : -1;
-    };
+    // Normalize headers: "Client Phone" -> "client_phone"
+    const rawHeaders = splitCSVLine(lines[0]);
+    const headers = rawHeaders.map(h => slug(h));
 
-    // expected sheet columns (case-insensitive):
-    // date, start, end, client, address, notes, service, client_phone, job_id
-    const iDate = key("date");
-    const iStart = key("start");
-    const iEnd = key("end");
-    const iClient = key("client");
-    const iAddress = key("address");
-    const iNotes = key("notes");
-    const iService = key("service");
-    const iPhone = key("client_phone");
-    const iJobId = key("job_id");
+    const rows = lines.slice(1).map(line => {
+      const cells = splitCSVLine(line);
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = (cells[i] || "").trim(); });
+      return obj;
+    });
 
-    const events = dataRows
-      .map((cols, i) => {
-        const date = get(cols, iDate);
-        const client = get(cols, iClient);
-        // Build a stable id
-        const safeClient = (client || "").trim().replace(/\s+/g, "_");
-        const serviceRaw = get(cols, iService);
-        const service = labelServiceType(serviceRaw);
-        return {
-          id: `${date || "no-date"}-${safeClient || "no-client"}-${service.replace(/\s+/g, "_")}`,
-          date,
-          start: get(cols, iStart),
-          end: get(cols, iEnd),
-          client,
-          title: service, // for compatibility with the frontend that reads e.title -> labelServiceType
-          service,        // explicit
-          address: get(cols, iAddress),
-          notes: get(cols, iNotes),
-          client_phone: get(cols, iPhone),
-          job_id: get(cols, iJobId),
-        };
-      })
-      // keep only rows that have a date and client
-      .filter((e) => e.date && e.client);
+    // Map to event objects the app expects
+    const events = rows.map((r) => {
+      const digits = (v) => (v || "").replace(/[^\d]/g, "");
+      return {
+        id: buildId(r),
+        date: r.date || r.start_date || "",
+        start: r.start || r.start_time || "",
+        end: r.end || r.end_time || "",
+        client: r.client || r.customer || "",
+        title: r.title || r.service_type || "",
+        address: r.address || "",
+        notes: r.notes || "",
+        client_phone: digits(r.client_phone || r["phone"] || r["client_phone_number"] || ""),
+        service_type: r.service_type || r.title || "",
+        assigned_cleaner: r.assigned_cleaner || r.cleaner || "",
+        status: r.status || "",
+        price: r.price || "",
+        paid: r.paid || "",
+      };
+    });
 
-    return res.status(200).json({ events });
+    return res.json({ events });
   } catch (e) {
-    return res.status(500).json({ error: String(e?.message || e) });
+    return res.status(500).json({ error: "Server error", detail: String(e) });
   }
 }
 
-/* ---------- helpers ---------- */
-function get(arr, idx) {
-  if (idx < 0) return "";
-  return (arr[idx] ?? "").toString().trim();
-}
+// --- helpers ---
 
-function labelServiceType(raw) {
-  const t = (raw || "").toLowerCase();
-  if (t.includes("air") || t.includes("turn")) return "Airbnb Turnover";
-  if (t.includes("deep")) return "Deep Clean";
-  if (t.includes("move")) return "Move-In/Out";
-  if (t.includes("post") || t.includes("reno")) return "Post-Renovation";
-  if (!t) return "Standard Clean";
-  return capitalizeWords(raw);
-}
-
-function capitalizeWords(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/\b\w/g, (m) => m.toUpperCase());
-}
-
-function parseCSV(text) {
-  const rows = [];
-  let row = [];
-  let val = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-
-    if (c === '"' && inQuotes && next === '"') {
-      // escaped quote
-      val += '"';
-      i++;
-      continue;
-    }
-
-    if (c === '"') {
-      inQuotes = !inQuotes;
-      continue;
-    }
-
-    if (c === "," && !inQuotes) {
-      row.push(val);
-      val = "";
-      continue;
-    }
-
-    if ((c === "\n" || c === "\r") && !inQuotes) {
-      // finalize row if we hit a line break
-      if (val.length || row.length) {
-        row.push(val);
-        rows.push(row);
+function splitCSVLine(line) {
+  // Handles commas inside quotes
+  const out = [];
+  let cur = "";
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') {
+        cur += '"'; i++;
+      } else {
+        inQ = !inQ;
       }
-      row = [];
-      val = "";
-
-      // swallow \r\n pairs
-      if (c === "\r" && next === "\n") i++;
-      continue;
+    } else if (ch === "," && !inQ) {
+      out.push(cur); cur = "";
+    } else {
+      cur += ch;
     }
-
-    val += c;
   }
+  out.push(cur);
+  return out;
+}
 
-  // push last cell
-  if (val.length || row.length) {
-    row.push(val);
-    rows.push(row);
-  }
+function slug(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^\w]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+}
 
-  return rows.filter((r) => r.length > 0);
+function buildId(r) {
+  const safe = (v) => String(v || "").trim().replace(/\s+/g, "_");
+  return `${r.date || ""}-${safe(r.client || r.address || "Client")}-${safe(r.service_type || r.title || "Service")}`;
 }
