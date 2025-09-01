@@ -14,7 +14,9 @@ const addDaysISO = (d) =>
   });
 
 const fmtTime = (hhmm) => {
-  if (!hhmm) return "";
+  if (!hhmm) return <div className="font-medium text-slate-900">
+  {displayName(job.client) || displayName(job.title)}
+</div>
   const [hh, mm] = String(hhmm).split(":").map(Number);
   const d = new Date();
   d.setHours(hh ?? 0, mm ?? 0, 0, 0);
@@ -26,6 +28,11 @@ const fmtTime = (hhmm) => {
 };
 
 const normalizePhone = (v = "") => v.replace(/[^\d]/g, "");
+// Treat long ALLCAPS/number strings as Square IDs and hide them
+const looksLikeId = (s = "") => /^[A-Z0-9]{12,}$/.test(s.trim());
+const displayName = (s = "", fallback = "Client") =>
+  s && !looksLikeId(s) ? s : fallback;
+
 
 /* ==================== SERVICE TYPE DETECTOR ==================== */
 /** Hide Square-ish IDs & classify by keywords or explicit names. */
