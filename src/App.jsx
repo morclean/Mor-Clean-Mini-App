@@ -1,474 +1,573 @@
 // src/App.jsx
 import { useEffect, useMemo, useState } from "react";
 
-/* ==============================
-   Small helpers (2 NEW LINES ADDED)
-   ============================== */
+/* =====================  small helpers  ===================== */
 
-// Hide long all-caps ID strings (Square service variation IDs etc.)
-const looksLikeId = (s = "") => /^[A-Z0-9]{12,}$/.test((s || "").trim());
+const TZ = "America/New_York"; // change if you operate in another timezone
 
-// Prefer a human name; if it's an ID, swap to a friendly fallback
-const displayName = (s = "", fallback = "Client") =>
-  s && !looksLikeId(s) ? s : fallback;
-
-/* ==============================
-   Date / time helpers
-   ============================== */
-const TZ = "America/New_York";
 const todayISO = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
-const addDaysISO = (d, days) =>
-  new Date(new Date(d).getTime() + days * 864e5).toLocaleDateString("en-CA", {
-    timeZone: TZ,
-  });
-const fmtTime = (s) => (s ? s : "—");
 
-/* ==============================
-   Checklist definitions (kept same)
-   ============================== */
-const ROOMS = [
-  {
-    key: "arrival",
-    title: "Arrival / Safety",
-    tasks: [
-      "Park legally; avoid blocking driveways/walkways",
-      "Announce arrival (if requested)",
-      "Arm/Disarm alarm correctly",
-      "Confirm pet notes; secure doors & windows",
+const addDays = (d, days) =>
+  new Date(new Date(d).getTime() + days * 24 * 60 * 60 * 1000)
+    .toLocaleDateString("en-CA", { timeZone: TZ });
+
+const fmtTime = (t) => (t ? t : "");
+
+const withinThisWeek = (iso) => {
+  const start = todayISO();
+  const end = addDays(start, 6);
+  return iso >= start && iso <= end;
+};
+
+// map Square-ish titles → our service names if the sheet is missing it
+const SERVICE_ID_MAP = {
+  "POWVHCWKBLS5LNVIKAWQRQJM": "Standard clean",
+  "DPMF5IVR654A73BPPHZFQIIM": "Standard clean",
+};
+
+// try to recognize service type from title + notes if missing
+function prettyService(rawTitle = "", notes = "") {
+  const direct = SERVICE_ID_MAP[rawTitle];
+  if (direct) return direct;
+
+  // If it *looks* like a 20–36 char all-caps id, ignore as human label
+  const looksLikeId = /^[A-Z0-9]{20,36}$/.test(rawTitle.trim());
+  const base = looksLikeId ? "" : rawTitle.trim();
+
+  const hay = (base || notes || "").toLowerCase();
+  const match = (labels) => labels.find((w) => hay.includes(w));
+
+  if (match(["airbnb", "turnover"])) return "Airbnb Turnover";
+  if (match(["move-in", "move out", "move-out"])) return "Move-in/Move-out Clean";
+  if (match(["post-construction", "post construction"])) return "Post-Construction Clean";
+  if (match(["deep clean", "deep"])) return "Deep Clean";
+  if (match(["listing", "realtor", "showing"])) return "Real Estate Listing Prep";
+  if (match(["office", "commercial"])) return "Small Office / Commercial";
+  if (match(["one time", "one-time"])) return "One-time Cleaning Service";
+
+  return "Standard Clean";
+}
+
+// Choose a human display name for a job
+const displayClient = (e) => {
+  const looksLikeId = (s) => /^[A-Z0-9]{20,36}$/.test((s || "").trim());
+  const candidates = [
+    e.client,
+    !looksLikeId(e.title) ? e.title : "",
+    (e.address || "").split(",")[0], // first chunk of address
+  ]
+    .map((x) => (x || "").trim())
+    .filter(Boolean);
+
+  return candidates[0] || "Client";
+};
+
+// nice badge
+const Badge = ({ children }) => (
+  <span className="inline-block rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold px-2 py-1">
+    {children}
+  </span>
+);
+
+/* =====================  checklist data  ===================== */
+
+const CHECKLISTS = {
+  // Base Residential
+  Standard: {
+    "Arrival / Safety": [
+      "Park legally, avoid blocking driveways / walkways",
+      "Announce arrival if occupied; respect quiet hours",
+      "Disarm alarm (if provided)",
     ],
-  },
-  {
-    key: "kitchen",
-    title: "Kitchen",
-    tasks: [
-      "Sink & fixtures cleaned",
-      "Counters & backsplash wiped",
+    Kitchen: [
+      "Counters + backsplash wiped",
+      "Sink scrubbed, fixtures polished",
       "Exterior appliances wiped",
-      "Microwave inside wiped",
-      "Stove top & control knobs",
-      "Cabinet pulls wiped",
-      "Floor vacuumed & mopped",
-      "Trash removed / bag replaced",
+      "Microwave interior wiped",
+      "Floors vacuumed + mopped",
+      "Trash out, new liner",
     ],
-  },
-  {
-    key: "bath",
-    title: "Bathrooms",
-    tasks: [
-      "Toilet (base/seat/handle) sanitized",
-      "Shower/tub scrubbed & rinsed",
-      "Mirror & vanity wiped",
-      "Restock paper/soap (if Airbnb)",
-      "Floor vacuumed & mopped",
+    Bathrooms: [
+      "Toilet, tub/shower, sink + fixtures cleaned",
+      "Mirrors + glass shined",
+      "Counters wiped",
+      "Floors vacuumed + mopped",
+      "Trash out, new liner",
     ],
-  },
-  {
-    key: "bed",
-    title: "Bedrooms",
-    tasks: [
-      "Make beds (tight corners)",
-      "Dust nightstands & surfaces",
-      "Tidy items",
-      "Vacuum or damp-mop floors",
+    Bedrooms: [
+      "Make bed(s)",
+      "Dust surfaces (tops + reachable fronts)",
+      "Tidy surfaces",
+      "Floors vacuumed / hard floors mopped",
+      "Empty small bins",
     ],
-  },
-  {
-    key: "common",
-    title: "Common Areas",
-    tasks: [
-      "Dust reachable surfaces",
-      "Glass & mirrors spot-free",
-      "Baseboards spot wipe",
+    "Living / Common": [
+      "Dust surfaces + electronics (lightly)",
+      "Cushions fluffed, visible tidy",
+      "Glass / mirrors spot-free",
       "Floors vacuumed / mopped",
     ],
   },
-];
 
-/* Airbnb extras shown when type === 'Airbnb Turnover' */
-const AIRBNB_EXTRAS = [
-  {
-    key: "airbnb",
-    title: "Airbnb Turnover",
-    tasks: [
-      "Inventory linens & towels",
-      "Laundry started (as applicable)",
-      "Restock consumables",
-      "Check inside fridge/freezer, oven & microwave",
-      "Check inside cabinets (crumbs/spills)",
-      "Patio/balcony tidy",
-      "Thermostat reset, lights off",
-      "Trash & recycle out, bins returned",
-      "3 angles BEFORE + AFTER photos each room",
+  // Airbnb adds turnovers + extras
+  Airbnb: {
+    "Arrival / Safety": [
+      "Park legally and discreetly",
+      "Photo check-in of front door",
+      "Note visible damage/issues",
+    ],
+    Kitchen: [
+      "Do dishes / run + empty dishwasher (if needed)",
+      "Restock basics (paper towels, dish soap) if supplied",
+      "Counters, sink, exterior appliances cleaned",
+      "Microwave interior wiped",
+      "Floors vacuumed + mopped",
+      "Trash out, new liner",
+    ],
+    Bathrooms: [
+      "Toilet, tub/shower, sink + fixtures cleaned",
+      "Restock toiletries (owner-supplied) + fold towels",
+      "Mirrors + glass shined",
+      "Floors vacuumed + mopped",
+      "Trash out, new liner",
+    ],
+    Bedrooms: [
+      "Strip + make bed(s) hotel-style",
+      "Replace linens (owner-supplied) + stage pillows",
+      "Dust reachable surfaces",
+      "Floors vacuumed / mopped",
+    ],
+    "Living / Common": [
+      "Tidy + reset furniture",
+      "Dust reachable surfaces",
+      "Spot clean glass/mirrors",
+      "Floors vacuumed / mopped",
+    ],
+    "Turnover Tasks": [
+      "Collect all trash + replace liners",
+      "Check fridge for left items",
+      "Laundry started/finished (if applicable)",
+      "Thermostat reset per rules",
+      "Supplies topped (owner-supplied)",
+    ],
+    "Inside Appliances (if requested)": [
+      "Fridge interior wiped",
+      "Oven interior wiped",
+      "Cabinets interior spot-wiped",
     ],
   },
-];
 
-/* Deep clean adds a deeper list */
-const DEEP_EXTRAS = [
-  {
-    key: "deep",
-    title: "Deep Clean",
-    tasks: [
-      "Detail baseboards & door trim",
-      "Cabinet fronts scrubbed",
-      "Behind/under small appliances",
-      "Vents/returns dusted",
-      "Spot walls/doors/handles",
+  Deep: {
+    "Deep Detail (extra)": [
+      "Baseboards + door frames wiped",
+      "Cabinet fronts detailed",
+      "Vents + light switch plates wiped",
+      "Furniture edges detailed",
     ],
   },
-];
-
-/* A tiny type pretty-printer. We keep your previous behavior:
-   If service_type is clearly an ID, try to infer from notes; else use service_type. */
-const prettyService = (rawTitle = "", notes = "") => {
-  const t = (rawTitle || "").trim();
-  const n = (notes || "").toLowerCase();
-
-  // If the raw title is a long ID, infer
-  if (looksLikeId(t)) {
-    if (/air\s?bnb|turnover/.test(n)) return "Airbnb Turnover";
-    if (/deep(?:\s|-)clean/.test(n)) return "Deep Clean";
-    if (/post.*construction/.test(n)) return "Post-Construction Clean";
-    if (/move-?in|move-?out/.test(n)) return "Move-In/Move-Out Clean";
-    if (/office|commercial/.test(n)) return "Small Office / Commercial";
-    if (/listing|realtor|real\s?estate/.test(n)) return "Real Estate Listing Prep";
-    if (/one[-\s]?time/.test(n)) return "One-Time Cleaning Service";
-    return "Standard Maintenance";
-  }
-
-  // Otherwise the title already looks like a human label
-  return t;
 };
 
-/* ==============================
-   API
-   ============================== */
-async function fetchJobs() {
-  const r = await fetch("/api/jobs", { cache: "no-store" });
-  if (!r.ok) {
-    const text = await r.text().catch(() => "");
-    throw new Error(`API ${r.status} ${text}`);
-  }
-  const data = await r.json();
-  return Array.isArray(data?.events) ? data.events : [];
-}
+/* =====================  UI controls  ===================== */
 
-/* Normalize rows from /api/jobs to what UI expects */
-function normalize(events = []) {
-  return events.map((e, i) => ({
-    id: e.id || `row-${i}`,
-    date: e.date || "",
-    start: e.start || "",
-    end: e.end || "",
-    client: e.client || "",
-    title: e.title || "",
-    address: e.address || "",
-    notes: e.notes || "",
-    client_phone: e.client_phone || "",
-    service_type: prettyService(e.title, e.notes),
-    assigned: e.assigned_cleaner || e.assigned || "",
-    status: e.status || "",
-    price: e.price || "",
-    paid: e.paid || "",
-  }));
-}
-
-/* Filter logic for tabs */
-function inThisWeek(dISO) {
-  if (!dISO) return false;
-  const start = todayISO();
-  const end = addDaysISO(start, 7);
-  return dISO >= start && dISO < end;
-}
-
-/* ==============================
-   Uploader stub (kept simple)
-   ============================== */
-function FileDrop({ label, onFiles }) {
+const Tabs = ({ value, setValue }) => {
+  const base =
+    "px-3 py-1 rounded-full border text-sm font-medium transition-colors";
+  const on = "bg-emerald-600 text-white border-emerald-600";
+  const off = "bg-white text-slate-700 border-slate-300 hover:bg-slate-50";
   return (
-    <div className="rounded-xl border border-slate-200 p-3">
-      <div className="text-sm font-medium mb-2">{label}</div>
-      <input
-        type="file"
-        multiple
-        onChange={(e) => onFiles?.(Array.from(e.target.files || []))}
-        className="block w-full text-sm"
-      />
+    <div className="flex gap-2">
+      {["Today", "This Week", "All"].map((t) => (
+        <button
+          key={t}
+          className={`${base} ${value === t ? on : off}`}
+          onClick={() => setValue(t)}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+/* =====================  Job Card  ===================== */
+
+function Room({ title, items, checked, toggle }) {
+  return (
+    <details className="rounded-xl border border-slate-200 bg-white">
+      <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between">
+        <span className="font-semibold">{title}</span>
+        <span className="text-slate-400 text-sm">tap to open</span>
+      </summary>
+      <div className="px-4 pb-4">
+        <ul className="space-y-3">
+          {items.map((it, idx) => {
+            const id = `${title}::${idx}`;
+            const isOn = !!checked[id];
+            return (
+              <li key={id} className="flex gap-3 items-start">
+                <input
+                  type="checkbox"
+                  className="w-5 h-5 mt-0.5 accent-emerald-600"
+                  checked={isOn}
+                  onChange={() => toggle(id)}
+                />
+                <span className="text-base leading-snug">{it}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </details>
+  );
+}
+
+function BeforeAfter({ onBefore, onAfter }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="font-semibold mb-2">Upload BEFORE photos</div>
+        <input
+          type="file"
+          multiple
+          accept="image/*"
+          onChange={(e) => onBefore(Array.from(e.target.files || []))}
+          className="block w-full"
+        />
+        <p className="text-xs text-slate-500 mt-1">
+          Tip: 3 angles per room (wide, mid, detail).
+        </p>
+      </div>
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="font-semibold mb-2">Upload AFTER photos</div>
+        <input
+          type="file"
+          multiple
+          accept="image/*"
+          onChange={(e) => onAfter(Array.from(e.target.files || []))}
+          className="block w-full"
+        />
+        <p className="text-xs text-slate-500 mt-1">
+          Tip: 3 angles per room (wide, mid, detail).
+        </p>
+      </div>
     </div>
   );
 }
 
-/* ==============================
-   Job Card
-   ============================== */
 function JobCard({ job, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const svc = job.service_type;
-  const extras =
-    svc === "Airbnb Turnover" ? AIRBNB_EXTRAS : svc === "Deep Clean" ? DEEP_EXTRAS : [];
+  const [checked, setChecked] = useState({});
+  const [beforeFiles, setBeforeFiles] = useState([]);
+  const [afterFiles, setAfterFiles] = useState([]);
 
-  // FINAL: use displayName helper so IDs never show in header.
-  const titleName = displayName(job.client) || displayName(job.title) || "Client";
+  const toggle = (id) => setChecked((m) => ({ ...m, [id]: !m[id] }));
+
+  const service = job.service_type || "Standard Clean";
+  const isAirbnb = /airbnb|turnover/i.test(service);
+  const isDeep = /deep/i.test(service);
+
+  // compose checklist per job type
+  const checklist = useMemo(() => {
+    const base = CHECKLISTS.Standard;
+    const air = CHECKLISTS.Airbnb;
+    const deep = CHECKLISTS.Deep;
+
+    if (isAirbnb && isDeep) return { ...air, ...deep };
+    if (isAirbnb) return air;
+    if (isDeep) return { ...base, ...deep };
+    return base;
+  }, [service, isAirbnb, isDeep]);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full text-left p-4 flex items-center justify-between"
-      >
-        <div>
-          <div className="inline-flex items-center gap-2">
-            <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-50 text-emerald-700 border border-emerald-200">
-              {svc}
-            </span>
-            <span className="text-slate-500 text-sm">
-              {job.date} • {fmtTime(job.start)}–{fmtTime(job.end)}
-            </span>
+    <details className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+      <summary className="list-none cursor-pointer">
+        <div className="flex flex-col md:flex-row md:items-center gap-2 p-4">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <Badge>{service}</Badge>
+              <span className="text-lg font-semibold">{job.client}</span>
+            </div>
+            <div className="text-slate-600">{job.address || "No address on file"}</div>
           </div>
-          <div className="mt-1 font-semibold text-slate-900">{titleName}</div>
-          <div className="text-slate-600 text-sm">{job.address || "No address on file"}</div>
-        </div>
-        <span className="text-slate-400">{open ? "▴" : "▾"}</span>
-      </button>
-
-      {open && (
-        <div className="p-4 pt-0 space-y-4">
-          {[...ROOMS, ...extras].map((grp) => (
-            <details key={grp.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <summary className="cursor-pointer text-slate-800 font-medium">{grp.title}</summary>
-              <ul className="mt-2 space-y-2">
-                {grp.tasks.map((t, idx) => (
-                  <li key={idx} className="flex items-start gap-2">
-                    <input type="checkbox" className="mt-1 h-5 w-5 rounded-md" />
-                    <span className="text-slate-700 text-[15px] leading-6">{t}</span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          ))}
-
-          <div className="grid md:grid-cols-2 gap-3">
-            <FileDrop label="Before Photos" />
-            <FileDrop label="After Photos" />
+          <div className="text-sm text-slate-500 min-w-[150px] text-right">
+            {job.date} {job.start && `• ${fmtTime(job.start)}`}
           </div>
         </div>
-      )}
-    </div>
-  );
-}
+      </summary>
 
-/* ==============================
-   Cleaner Portal
-   ============================== */
-function CleanerPortal({ items, apiInfo }) {
-  const [tab, setTab] = useState("today");
-  const [q, setQ] = useState("");
+      <div className="px-4 pb-5 md:px-6 space-y-4">
+        {/* Notes */}
+        {job.notes ? (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-amber-900">
+            <strong className="mr-1">Notes:</strong>
+            {job.notes}
+          </div>
+        ) : null}
 
-  const filtered = useMemo(() => {
-    const base =
-      tab === "today"
-        ? items.filter((j) => j.date === todayISO())
-        : tab === "week"
-        ? items.filter((j) => inThisWeek(j.date))
-        : items;
-
-    if (!q.trim()) return base;
-    const qq = q.toLowerCase();
-    return base.filter(
-      (j) =>
-        (j.client || "").toLowerCase().includes(qq) ||
-        (j.address || "").toLowerCase().includes(qq) ||
-        (j.notes || "").toLowerCase().includes(qq)
-    );
-  }, [items, tab, q]);
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-slate-500">
-          API events: {apiInfo.apiCount} • normalized: {apiInfo.normCount} • today:{" "}
-          {filtered.filter((j) => j.date === todayISO()).length}
-          {apiInfo.error ? (
-            <span className="text-rose-600"> • error: {apiInfo.error}</span>
-          ) : null}
-        </div>
-
-        <div className="flex items-center gap-2">
-          {[
-            { key: "today", label: "Today" },
-            { key: "week", label: "This Week" },
-            { key: "all", label: "All" },
-          ].map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`px-3 py-1 rounded-full border ${
-                tab === t.key
-                  ? "bg-emerald-600 text-white border-emerald-600"
-                  : "bg-white text-slate-700 border-slate-200"
-              }`}
-            >
-              {t.label}
-            </button>
+        {/* Rooms */}
+        <div className="grid grid-cols-1 gap-3">
+          {Object.entries(checklist).map(([room, items]) => (
+            <Room key={room} title={room} items={items} checked={checked} toggle={toggle} />
           ))}
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search client, address, notes…"
-            className="ml-2 w-64 rounded-full border border-slate-200 px-3 py-1.5 text-sm"
-          />
         </div>
-      </div>
 
-      <div className="space-y-3">
-        {filtered.length === 0 ? (
-          <div className="text-slate-500">No jobs found.</div>
-        ) : (
-          filtered.map((j, i) => (
-            <JobCard key={j.id || i} job={j} defaultOpen={filtered.length === 1} />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
+        {/* Photos */}
+        <BeforeAfter onBefore={setBeforeFiles} onAfter={setAfterFiles} />
 
-/* ==============================
-   Customer Portal
-   ============================== */
-function CustomerPortal({ items }) {
-  const [phone, setPhone] = useState("");
-  const [show, setShow] = useState(false);
-
-  const mine = useMemo(() => {
-    const p = phone.replace(/\D/g, "");
-    if (!p) return [];
-    return items.filter((j) => (j.client_phone || "").replace(/\D/g, "") === p);
-  }, [items, phone]);
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-        <div className="text-slate-800 font-semibold mb-2">Customer Portal</div>
-        <div className="flex items-center gap-2">
-          <input
-            inputMode="tel"
-            placeholder="Enter phone number"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            className="w-64 rounded-xl border border-slate-300 px-3 py-2 text-base"
-          />
-          <button
-            onClick={() => setShow(true)}
-            className="rounded-xl bg-emerald-600 text-white px-4 py-2"
-          >
-            View my schedule & photos
+        {/* Footer buttons (non-functional placeholders) */}
+        <div className="flex flex-wrap gap-3 pt-2">
+          <button className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800">
+            Save Progress
+          </button>
+          <button className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white">
+            Complete Job
           </button>
         </div>
       </div>
+    </details>
+  );
+}
 
-      {show && (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-          <div className="text-slate-700">
-            Showing {mine.length} clean(s) for <b>{phone}</b>
+/* =====================  Cleaner Portal  ===================== */
+
+function CleanerPortal() {
+  const [tab, setTab] = useState("Today");
+  const [query, setQuery] = useState("");
+  const [events, setEvents] = useState([]);
+  const [apiStats, setApiStats] = useState({ api: 0, normalized: 0, today: 0, error: "" });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/jobs", { cache: "no-store" });
+        const j = await r.json();
+        const raw = Array.isArray(j.events) ? j.events : [];
+        setApiStats((s) => ({ ...s, api: raw.length }));
+
+        const normalized = raw.map((e) => ({
+          id:
+            e.id ||
+            `${e.date}-${(e.client || "Client").replace(/\s+/g, "_")}-${
+              e.service_type || e.title || "Service"
+            }`,
+          date: e.date || "",
+          start: e.start || "",
+          end: e.end || "",
+          client: displayClient(e),
+          address: e.address || "",
+          notes: e.notes || "",
+          client_phone: e.client_phone || "",
+          service_type: e.service_type || prettyService(e.title, e.notes),
+          title: e.title || "",
+        }));
+
+        const todayCount = normalized.filter((e) => e.date === todayISO()).length;
+        setApiStats({ api: raw.length, normalized: normalized.length, today: todayCount, error: "" });
+
+        setEvents(normalized);
+      } catch (err) {
+        setApiStats((s) => ({ ...s, error: "API 500" }));
+        setEvents([]);
+      }
+    })();
+  }, []);
+
+  const filtered = useMemo(() => {
+    let list = [...events];
+    if (tab === "Today") list = list.filter((e) => e.date === todayISO());
+    if (tab === "This Week") list = list.filter((e) => withinThisWeek(e.date));
+
+    const q = query.trim().toLowerCase();
+    if (q) {
+      list = list.filter((e) =>
+        [e.client, e.address, e.notes, e.service_type, e.title]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      );
+    }
+
+    // sort by date + start time
+    list.sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
+    return list;
+  }, [events, tab, query]);
+
+  return (
+    <div className="space-y-4">
+      {/* header */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="M.O.R. Clean" className="h-8 w-8 rounded-full" />
+          <div>
+            <div className="font-bold text-xl">M.O.R. Clean Daytona</div>
+            <div className="text-xs text-slate-500">Women-owned • Family-operated</div>
           </div>
-          {mine.length === 0 ? (
-            <div className="text-slate-500">No matching cleans found.</div>
-          ) : (
-            mine.map((j) => (
-              <div key={j.id} className="border border-slate-200 rounded-xl p-3">
-                <div className="font-medium text-slate-900">
-                  {displayName(j.client) || displayName(j.title)}
-                </div>
-                <div className="text-slate-600 text-sm">
-                  {j.date} • {fmtTime(j.start)}–{fmtTime(j.end)}
-                </div>
-                <div className="text-slate-600 text-sm">{j.address || "No address on file"}</div>
-                <div className="mt-2 text-xs text-slate-500">
-                  (Photos wiring uses your existing storage; this section will show uploaded BEFORE /
-                  AFTER once present.)
-                </div>
-              </div>
-            ))
-          )}
+        </div>
+        <div className="text-xs text-slate-500">
+          API events: {apiStats.api} • normalized: {apiStats.normalized} • today: {apiStats.today}
+          {apiStats.error && ` • error: ${apiStats.error}`}
+        </div>
+      </div>
+
+      {/* controls */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Tabs value={tab} setValue={setTab} />
+        <input
+          className="flex-1 min-w-[220px] rounded-full border border-slate-300 px-3 py-2 text-sm"
+          placeholder="Search client, address, notes…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {/* jobs */}
+      {filtered.length === 0 ? (
+        <div className="text-slate-500">No jobs found.</div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((e) => (
+            <JobCard key={e.id} job={e} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-/* ==============================
-   App Root
-   ============================== */
-export default function App() {
-  const [eventsRaw, setEventsRaw] = useState([]);
-  const [events, setEvents] = useState([]);
-  const [apiErr, setApiErr] = useState("");
+/* =====================  Client Portal  ===================== */
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const ev = await fetchJobs();
-        if (!alive) return;
-        setEventsRaw(ev);
-        setEvents(normalize(ev));
-        setApiErr("");
-      } catch (e) {
-        if (!alive) return;
-        setApiErr(String(e.message || e));
-        setEventsRaw([]);
-        setEvents([]);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+function ClientPortal() {
+  const [phone, setPhone] = useState("");
+  const [events, setEvents] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const normalizedPhone = (v) => (v || "").replace(/[^\d]/g, "");
+
+  const load = async () => {
+    setLoaded(false);
+    try {
+      const r = await fetch("/api/jobs", { cache: "no-store" });
+      const j = await r.json();
+      const raw = Array.isArray(j.events) ? j.events : [];
+      const mine = raw
+        .map((e) => ({
+          id: e.id,
+          date: e.date || "",
+          start: e.start || "",
+          end: e.end || "",
+          client: displayClient(e),
+          address: e.address || "",
+          notes: e.notes || "",
+          client_phone: e.client_phone || "",
+          service_type: e.service_type || prettyService(e.title, e.notes),
+        }))
+        .filter((e) => normalizedPhone(e.client_phone) === normalizedPhone(phone));
+
+      mine.sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
+      setEvents(mine);
+    } catch (e) {
+      setEvents([]);
+    } finally {
+      setLoaded(true);
+    }
+  };
 
   return (
-    <div className="min-h-dvh bg-emerald-50/30">
-      <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
-        <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/logo.png" alt="M.O.R. Clean Daytona" className="h-8 w-8 rounded-full" />
-            <div>
-              <div className="font-semibold text-slate-900">M.O.R. Clean Daytona</div>
-              <div className="text-xs text-slate-500">Women-owned • Family-operated</div>
-            </div>
-          </div>
-          <nav className="flex items-center gap-2">
-            <a href="#cleaner" className="px-3 py-1 rounded-full bg-emerald-600 text-white">
-              Cleaner Portal
-            </a>
-            <a href="#customer" className="px-3 py-1 rounded-full border border-slate-200">
-              Customer Portal
-            </a>
-          </nav>
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <img src="/logo.png" alt="M.O.R. Clean" className="h-8 w-8 rounded-full" />
+        <div>
+          <div className="font-bold text-xl">Client Portal</div>
+          <div className="text-xs text-slate-500">View upcoming cleans & photos (by phone).</div>
         </div>
-      </header>
+      </div>
 
-      <main className="mx-auto max-w-5xl px-4 py-6 space-y-10">
-        <section id="cleaner" className="space-y-3">
-          <CleanerPortal
-            items={events}
-            apiInfo={{
-              apiCount: eventsRaw.length,
-              normCount: events.length,
-              error: apiErr,
-            }}
-          />
-        </section>
+      <div className="flex items-center gap-3">
+        <input
+          inputMode="tel"
+          placeholder="Enter phone number"
+          className="rounded-full border border-slate-300 px-4 py-3 text-base w-[260px]"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+        />
+        <button
+          className="px-4 py-3 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+          onClick={load}
+        >
+          View my schedule & photos
+        </button>
+      </div>
 
-        <section id="customer">
-          <CustomerPortal items={events} />
-        </section>
-      </main>
+      {loaded && (
+        <>
+          {events.length === 0 ? (
+            <div className="text-slate-500">No cleans found for that phone.</div>
+          ) : (
+            <div className="space-y-3">
+              {events.map((e) => (
+                <div
+                  key={e.id}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col md:flex-row md:items-center gap-2"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <Badge>{e.service_type}</Badge>
+                      <span className="font-semibold">{e.client}</span>
+                    </div>
+                    <div className="text-slate-600">{e.address}</div>
+                  </div>
+                  <div className="text-sm text-slate-500 min-w-[150px] text-right">
+                    {e.date} {e.start && `• ${fmtTime(e.start)}`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
-      <footer className="py-8 text-center text-xs text-slate-500">
-        v10 • {todayISO()}
-      </footer>
+/* =====================  App shell  ===================== */
+
+export default function App() {
+  const [view, setView] = useState("cleaner"); // "cleaner" | "client"
+  return (
+    <div className="min-h-screen bg-emerald-50/40 text-slate-900">
+      <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+        {/* top tabs */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <img src="/logo.png" alt="logo" className="h-8 w-8 rounded-full" />
+            <div className="font-bold text-lg tracking-wide">M.O.R. Clean Daytona</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setView("cleaner")}
+              className={`px-4 py-2 rounded-full ${
+                view === "cleaner"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-white border border-slate-300 text-slate-700"
+              }`}
+            >
+              Cleaner Portal
+            </button>
+            <button
+              onClick={() => setView("client")}
+              className={`px-4 py-2 rounded-full ${
+                view === "client"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-white border border-slate-300 text-slate-700"
+              }`}
+            >
+              Client Portal
+            </button>
+          </div>
+        </div>
+
+        {view === "cleaner" ? <CleanerPortal /> : <ClientPortal />}
+      </div>
     </div>
   );
 }
