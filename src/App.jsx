@@ -1,437 +1,316 @@
+// src/App.jsx
 import React, { useEffect, useMemo, useState } from "react";
 
-/**
- * MOR Clean – Mini App
- * Single-file UI for Cleaners + Customers
- * - Fetches /api/jobs JSON (coming from your Sheet/Square pipeline)
- * - Big tap targets, larger checkboxes & fonts
- * - Jobs collapsed by default; per-room accordions
- * - Before/After photo sections are separate
- * - Customer portal filters by phone number (digits only)
- *
- * You can safely edit the CONFIG and MAPPINGS sections below without touching the rest.
- */
+/* ==================== CONFIG ==================== */
+const TZ = "America/New_York"; // your local timezone
 
-/* ===================== CONFIG ===================== */
-
-const TZ = "America/New_York";               // change if you operate elsewhere
-const SHOW_PAST_DAYS = 0;                    // how many days back to consider for "All"
-const SHOW_AHEAD_DAYS = 60;                  // how many days ahead to consider for "All"
-const DEFAULT_VIEW = "today";                // "today" | "week" | "all"
-
-/**
- * Some Square service-variation names are cryptic (IDs like POWVHCWKB…).
- * Map those raw values to friendly names here. Add rows as you discover new ones.
- */
-const SERVICE_ID_MAP = {
-  // "POWVHCWKBLS5LNVIKAWQRQJM": "Standard Maintenance",
-  // "DPMF5IVR654A73BPPHZFQIIM": "Standard Maintenance",
-};
-
-/**
- * Friendly names we want to use in the UI. `prettyService` will try to match to these.
- * Add or adjust labels freely—these are what cleaners & clients see.
- */
-const SERVICE_CANON = [
-  "Standard Maintenance",
-  "Airbnb Turnover",
-  "Small Office/Commercial",
-  "One-Time Cleaning Service",
-  "Real Estate Listing Prep",
-  "Post Construction Clean",
-  "Deep Clean",
-  "Move-In/Move-Out Clean",
-];
-
-/* ===================== HELPERS ===================== */
-
-const onlyDigits = (s = "") => (s || "").replace(/\D+/g, "");
-const fmtDate = (d) =>
-  new Date(d).toLocaleDateString("en-US", { timeZone: TZ, year: "numeric", month: "short", day: "2-digit" });
-const fmtTime = (t) => t || ""; // times are already strings ("11:00"), keep simple
-
+/* ==================== DATE/TIME HELPERS ==================== */
 const todayISO = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
 
-const addDays = (baseISO, days) =>
-  new Date(new Date(baseISO).getTime() + days * 24 * 60 * 60 * 1000)
-    .toLocaleDateString("en-CA", { timeZone: TZ });
+const addDaysISO = (d) =>
+  new Date(Date.now() + d * 24 * 60 * 60 * 1000).toLocaleDateString("en-CA", {
+    timeZone: TZ,
+  });
 
-const isToday = (iso) => iso === todayISO();
-
-const isThisWeek = (iso) => {
-  const start = startOfWeek(todayISO());
-  const end = addDays(start, 6);
-  return iso >= start && iso <= end;
+const fmtTime = (hhmm) => {
+  if (!hhmm) return "";
+  const [hh, mm] = String(hhmm).split(":").map(Number);
+  const d = new Date();
+  d.setHours(hh ?? 0, mm ?? 0, 0, 0);
+  return d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: TZ,
+  });
 };
 
-const startOfWeek = (baseISO) => {
-  // Monday-based
-  const d = new Date(baseISO + "T00:00:00");
-  const day = (d.getDay() + 6) % 7;
-  d.setDate(d.getDate() - day);
-  return d.toLocaleDateString("en-CA", { timeZone: TZ });
-};
+const normalizePhone = (v = "") => v.replace(/[^\d]/g, "");
 
-const withinAllWindow = (iso) => {
-  const start = addDays(todayISO(), -SHOW_PAST_DAYS);
-  const end = addDays(todayISO(), SHOW_AHEAD_DAYS);
-  return iso >= start && iso <= end;
-};
+/* ==================== SERVICE TYPE DETECTOR ==================== */
+/** Hide Square-ish IDs & classify by keywords or explicit names. */
+function prettyService(rawTitle = "", notes = "", incoming = "") {
+  // If service_type already looks human, prefer it
+  const incomingClean = (incoming || "").trim();
+  const looksLikeId = (s = "") => /^[A-Z0-9]{12,}$/.test((s || "").trim());
+  const base = looksLikeId(rawTitle) ? "" : (rawTitle || "").trim();
 
-/**
- * Convert Square/Sheet “title” into a friendly service label:
- * 1) direct map via SERVICE_ID_MAP
- * 2) strip all-caps ID-ish values (24–32 length, A-Z0-9) to ""
- * 3) try to match words against SERVICE_CANON
- * 4) fallback to "Standard Maintenance"
- */
-function prettyService(rawTitle = "", notes = "") {
-  const direct = SERVICE_ID_MAP[rawTitle];
-  if (direct) return direct;
+  const CANON = [
+    "Standard Clean",
+    "Airbnb Turnover",
+    "Small Office / Commercial",
+    "One-Time Cleaning",
+    "Real Estate Listing Prep",
+    "Post-Construction Clean",
+    "Deep Clean",
+    "Move-In / Move-Out Clean",
+  ];
 
-  // Put near the other helpers
-const looksLikeId = (s = "") => /^[A-Z0-9]{12,}$/.test((s || "").trim());
+  if (incomingClean && CANON.includes(incomingClean)) return incomingClean;
+  if (base && CANON.includes(base)) return base;
 
-// Prefer client name; if it looks like an ID, skip it. Then try address.
-// If both are missing, show a friendly service label.
-function jobCardTitle(ev = {}) {
-  const maybeClient = (ev.client || "").trim();
-  if (maybeClient && !looksLikeId(maybeClient)) return maybeClient;
+  const hay = (base + " " + (notes || "") + " " + incomingClean).toLowerCase();
 
-  const maybeAddr = (ev.address || "").trim();
-  if (maybeAddr && !looksLikeId(maybeAddr)) return maybeAddr;
+  const RULES = [
+    { label: "Airbnb Turnover", test: /(airbnb|turnover|bnb)/ },
+    { label: "Move-In / Move-Out Clean", test: /(move[-\s]?in|move[-\s]?out)/ },
+    { label: "Post-Construction Clean", test: /(post[-\s]?construction|punch\s?list)/ },
+    { label: "Deep Clean", test: /(deep\s?clean|spring\s?clean)/ },
+    { label: "Small Office / Commercial", test: /(office|commercial)/ },
+    { label: "One-Time Cleaning", test: /(one[-\s]?time|single\s?visit)/ },
+    { label: "Real Estate Listing Prep", test: /(listing|realtor|staging|open\s?house)/ },
+    { label: "Standard Clean", test: /(standard|maintenance|regular)/ },
+  ];
+  for (const r of RULES) if (r.test.test(hay)) return r.label;
 
-  return prettyService(ev.title, ev.notes);
+  return "Standard Clean";
 }
 
-
-  const hay = (base || notes || "").toLowerCase();
-
-  for (const label of SERVICE_CANON) {
-    const needle = label.toLowerCase().split(/[^\w]+/).filter(Boolean);
-    const hit = needle.every((w) => hay.includes(w));
-    if (hit) return label;
-  }
-
-  // weak keyword guesses
-  if (/air\s*bnb|airbnb|turnover/.test(hay)) return "Airbnb Turnover";
-  if (/move-?in|move-?out/.test(hay)) return "Move-In/Move-Out Clean";
-  if (/post.+construction/.test(hay)) return "Post Construction Clean";
-  if (/deep/.test(hay)) return "Deep Clean";
-  if (/office|commercial/.test(hay)) return "Small Office/Commercial";
-  if (/listing|real\s*estate/.test(hay)) return "Real Estate Listing Prep";
-  if (/one[-\s]?time/.test(hay)) return "One-Time Cleaning Service";
-
-  return "Standard Maintenance";
-}
-
-/**
- * Job title for the card: prefer client’s name; else address; else friendly service.
- */
-function jobCardTitle(ev) {
-  const name = (ev.client || "").trim();
-  if (name) return name;
-  const addr = (ev.address || "").trim();
-  if (addr) return addr;
-  return prettyService(ev.title, ev.notes);
-}
-
-/**
- * Checklist bundles by service type.
- * Each section -> array of items. (We use larger tap targets in UI)
- */
+/* ==================== CHECKLISTS ==================== */
 const CHECKLISTS = {
-  "Standard Maintenance": {
+  "Standard Clean": {
     "Arrival / Safety": [
-      "Park legally; avoid blocking driveways/walkways",
-      "Announce arrival if occupied; respect quiet hours",
-      "Disarm alarm (if needed) or notify lead if issue",
+      "Park legally; avoid blocking driveways",
+      "Announce arrival (if required) & respect quiet hours",
+      "Report any safety hazards",
     ],
     Kitchen: [
-      "Dishes washed/loaded; sink cleaned",
-      "Counters & backsplash wiped",
-      "Stove top & front wiped",
-      "Microwave exterior & handle wiped",
-      "Cabinet exteriors spot-wiped (high touch)",
-      "Trash emptied & liner replaced",
-      "Floors swept/vacuumed; quick mop",
+      "Dishes washed or loaded",
+      "Sinks & faucets cleaned",
+      "Counters wiped",
+      "Appliance exteriors wiped",
+      "Microwave inside/out",
+      "Floors swept & mopped",
+      "Trash out / liner replaced",
     ],
     Bathrooms: [
-      "Toilet (inside/outside, base) cleaned",
-      "Sink & faucet polished",
+      "Toilet cleaned & sanitized",
+      "Sink & faucet cleaned",
       "Mirror streak-free",
-      "Shower/tub & fixtures cleaned",
-      "Trash emptied; liner replaced",
-      "Floors swept/mopped",
-      "Stock soap & tissue if provided",
+      "Shower/tub scrubbed",
+      "Floors vacuumed/mopped",
+      "Trash out / liner replaced",
     ],
     Bedrooms: [
-      "Make bed (or tidy bedding)",
-      "Dust reachable surfaces",
+      "Make beds (straighten/replace linens if provided)",
+      "Dust surfaces",
       "Nightstands wiped",
-      "Floors vacuumed / quick mop",
+      "Floors vacuumed/mopped",
+      "Tidy surfaces",
     ],
-    "Common Areas": [
-      "Surfaces dusted (TV stand, shelves, tables)",
-      "Glass doors / fingerprints spot-cleaned",
-      "Couch cushions fluffed, throws folded",
-      "Floors vacuumed / quick mop",
+    Common: [
+      "Dust flat surfaces",
+      "Vacuum/mop floors",
+      "Windows/doors spot-clean",
     ],
   },
 
   "Airbnb Turnover": {
     "Arrival / Safety": [
-      "Announce arrival; photograph entry condition",
-      "Check thermostat & set to standard",
-      "Quick supply check (stock paper goods, soap if provided)",
+      "Document entry condition (photos)",
+      "Check thermostat per host prefs",
+      "Report damage/issues immediately",
     ],
     Kitchen: [
-      "Dishes washed/loaded & put away",
-      "Counters, backsplash, sink, faucet cleaned",
-      "Stove top/front; microwave inside & outside",
-      "Fridge exterior; spot wipe cabinets",
-      "Empty all trash; replace liners",
-      "Floors swept/mopped",
+      "Dishes washed or loaded",
+      "Counters & sinks sanitized",
+      "Microwave inside/out",
+      "Fridge exterior; spot-check shelves",
+      "Stove/oven exterior",
+      "Replace coffee/tea & supplies (if provided)",
+      "Floors swept & mopped",
+      "Trash out / liner replaced",
     ],
     Bathrooms: [
-      "Toilet thorough clean (inside/outside/base)",
-      "Sink/vanity & faucet polished",
-      "Tubs/showers scrubbed; fixtures shined",
-      "Mirror streak-free",
-      "Replenish towels & toiletries (per host standards)",
-      "Trash emptied; floors mopped",
+      "Toilet, sink, shower/tub fully sanitized",
+      "Mirrors streak-free",
+      "Restock TP/soap/shampoo (if provided)",
+      "Replace towels per host setup",
+      "Floors vacuumed/mopped",
+      "Trash out / liner replaced",
     ],
     Bedrooms: [
-      "Strip beds; launder sheets (if in scope); make beds hotel-style",
-      "Dust reachable surfaces & wipe nightstands",
-      "Closets: hangers tidy; check under bed",
+      "Strip & replace linens per host setup",
+      "Make beds hotel-style",
+      "Dust furniture",
+      "Check under beds/closets",
       "Floors vacuumed/mopped",
     ],
-    "Common Areas": [
-      "Dust all surfaces & light switches",
-      "Stage pillows/throws neatly",
-      "Spot clean glass/doors",
-      "Floors vacuumed/mopped",
+    Common: [
+      "Dust/wipe surfaces & high-touch areas",
+      "Stage pillows/throws as per photos",
+      "Check patios/balconies (sweep if needed)",
+      "Take out all trash to designated bin",
     ],
-    "Deep Extras (if requested)": [
+    "Deep Turnover (as requested)": [
       "Inside fridge",
       "Inside oven",
-      "Inside cabinets",
-      "Baseboards detailed",
-      "Fans & vents dusted",
+      "Inside cabinets/drawers",
+      "Baseboards & door frames",
     ],
   },
 
   "Deep Clean": {
     "Arrival / Safety": [
-      "Announce arrival; walk-through to identify focus areas",
-      "Protect floors as needed",
+      "Walkthrough & note problem areas",
+      "Before photos (3 angles/room)",
     ],
     Kitchen: [
-      "Appliance exteriors + tops detailed",
-      "Inside microwave",
-      "Cabinet faces washed (full)",
-      "Counter edges & grout detailed",
-      "Baseboards & toe-kicks",
-      "Floors vacuumed & mopped thoroughly",
+      "All standard tasks",
+      "Inside microwave, oven (if requested), and fridge (if requested)",
+      "Cabinet fronts wiped",
+      "Baseboards & door frames",
     ],
     Bathrooms: [
-      "Hard water/soap scum removal (as possible)",
-      "Crevices & baseboards detailed",
-      "Cabinet faces washed",
-      "Mirrors & glass detailed",
-      "Floors scrubbed/mopped",
+      "All standard tasks",
+      "Detail scrub grout & corners",
+      "Baseboards & vents",
     ],
     Bedrooms: [
-      "Detail dust (frames, lamps, vents, blinds as reachable)",
-      "Beds made; under-bed vacuum if accessible",
-      "Baseboards wiped",
-      "Floors edges vacuumed/mopped",
+      "All standard tasks",
+      "Ceiling fans & vents dusted",
+      "Baseboards & door frames",
     ],
-    "Common Areas": [
-      "Detail dust + baseboards",
-      "Door frames/handles wiped",
-      "High touch points sanitized",
-      "Floors edges vacuumed/mopped",
+    Common: [
+      "All standard tasks",
+      "Window sills & tracks",
+      "Baseboards & door frames",
     ],
   },
 
-  "Move-In/Move-Out Clean": {
+  "Move-In / Move-Out Clean": {
     "Arrival / Safety": [
-      "Confirm electricity/water access",
-      "Document pre-existing conditions",
+      "Walkthrough for damages",
+      "Before photos (3 angles/room)",
     ],
     Kitchen: [
-      "Inside/Outside of Fridge",
-      "Inside/Outside of Oven",
-      "Inside/Outside of Cabinets/Drawers",
-      "Counters & sink detailed",
-      "Floors vacuumed/mopped",
+      "Inside/outside cabinets & drawers",
+      "Inside fridge & oven",
+      "Appliance exteriors",
+      "Sinks/counters sanitized",
+      "Floors swept & mopped",
     ],
     Bathrooms: [
-      "Inside cabinets/drawers",
-      "Tubs/showers, toilets, sinks fully detailed",
+      "Toilet/sink/tub/shower scrubbed & sanitized",
       "Mirrors & fixtures polished",
-      "Floors mopped",
-    ],
-    Bedrooms: [
-      "Closets shelves & rods wiped",
-      "Baseboards & doors wiped",
+      "Inside cabinets & drawers",
       "Floors vacuumed/mopped",
     ],
-    "Common Areas": [
+    Bedrooms: [
+      "Closets shelves wiped",
+      "Floors vacuumed/mopped",
+      "Baseboards & door frames",
+    ],
+    Common: [
       "All surfaces dusted/wiped",
-      "Baseboards & doors",
+      "Baseboards & door frames",
       "Floors vacuumed/mopped",
     ],
   },
 
-  "Small Office/Commercial": {
+  "Post-Construction Clean": {
     "Arrival / Safety": [
-      "Check access, alarm instructions",
-      "Place wet floor signs when mopping",
+      "PPE as needed; check hazards",
+      "Before photos",
     ],
-    Kitchen: [
-      "Breakroom counters & sink",
-      "Microwave inside/outside",
-      "Trash & recycling removed",
-      "Floors swept/mopped",
-    ],
-    Bathrooms: [
-      "Toilets, sinks, mirrors cleaned",
-      "Stock paper goods & soap",
-      "Floors mopped",
-    ],
-    "Common Areas": [
-      "Desks spot-dusted (clear surfaces only)",
-      "Cubbies/light switches wiped",
-      "Entry glass spot-cleaned",
-      "Floors vacuumed/mopped",
+    WholeHome: [
+      "Heavy dust removal from all surfaces",
+      "Vacuum debris; mop floors",
+      "Detail clean fixtures & vents",
+      "Windows/frames & sills (spot clean)",
+      "Final after photos (3 angles/room)",
     ],
   },
 
-  "Real Estate Listing Prep": {
-    "Arrival / Safety": ["Walk-through with checklist"],
-    Kitchen: [
-      "Counters staged & shined",
-      "Sink/faucet polished",
-      "Front of appliances streak-free",
-      "Floors vacuumed/mopped",
-    ],
-    Bathrooms: [
-      "Sinks/tub/toilet spotless",
-      "Mirrors/glass streak-free",
-      "Towels staged",
-      "Floors mopped",
-    ],
-    Bedrooms: [
-      "Beds made neatly",
-      "Surfaces dusted",
-      "Floors vacuumed/mopped",
-    ],
-    "Common Areas": [
-      "Declutter & stage pillows/throws",
-      "Dust media center/shelves",
-      "Entry glass clean",
-      "Floors vacuumed/mopped",
-    ],
-  },
-
-  "Post Construction Clean": {
+  "Small Office / Commercial": {
     "Arrival / Safety": [
-      "PPE as needed; debris hazards noted",
-      "Initial dusting pass (high to low)",
+      "Check alarm/lockup instructions",
+      "Before photos (shared spaces)",
     ],
-    Kitchen: [
-      "Construction dust removal (multi-pass)",
-      "Cabinet faces wiped",
-      "Appliance exteriors cleaned",
-      "Floors vacuumed/mopped (multi-pass)",
-    ],
-    Bathrooms: [
-      "Dust & residue removal (multi-pass)",
-      "Fixtures polished",
-      "Floors mopped",
-    ],
-    Bedrooms: [
-      "Blinds/vents dusted (as reachable)",
-      "Baseboards & frames wiped",
+    WorkAreas: [
+      "Desk surfaces (as allowed)",
+      "Trash out / liners replaced",
       "Floors vacuumed/mopped",
+      "High-touch disinfection",
     ],
-    "Common Areas": [
-      "All surfaces dusted (multi-pass)",
-      "Glass & mirrors cleaned",
+    Restrooms: [
+      "Toilets/urinals/sinks sanitized",
+      "Mirrors cleaned",
+      "Consumables restocked (if provided)",
+    ],
+    Breakroom: [
+      "Counters/sinks wiped",
+      "Appliance exteriors",
       "Floors vacuumed/mopped",
+      "Trash out",
     ],
   },
 };
 
-/* ===================== UI PRIMITIVES ===================== */
+/* ==================== UI HELPERS ==================== */
+const Section = ({ title, children }) => (
+  <div className="mb-6">
+    <h3 className="text-lg font-semibold text-slate-800 mb-2">{title}</h3>
+    <div>{children}</div>
+  </div>
+);
 
-function Badge({ children }) {
-  return (
-    <span className="inline-block rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1">
-      {children}
-    </span>
-  );
-}
+const Chip = ({ active, onClick, children }) => (
+  <button
+    onClick={onClick}
+    className={`px-3 py-1 rounded-full border ${
+      active
+        ? "bg-emerald-600 text-white border-emerald-600"
+        : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+    }`}
+  >
+    {children}
+  </button>
+);
 
-function Section({ title, children, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="border rounded-xl overflow-hidden mb-3">
-      <button
-        className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-emerald-50"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="text-base font-semibold">{title}</span>
-        <span className="text-xl">{open ? "▴" : "▾"}</span>
-      </button>
-      {open && <div className="bg-emerald-50/40 px-4 py-3">{children}</div>}
-    </div>
-  );
-}
-
-function BigCheckbox({ label, checked, onChange }) {
-  return (
-    <label className="flex items-start gap-3 py-2">
-      <input
-        type="checkbox"
-        className="h-6 w-6 accent-emerald-600 cursor-pointer mt-1"
-        checked={!!checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <span className="text-[17px] leading-6 select-none">{label}</span>
-    </label>
-  );
-}
-
-/* ===================== MAIN APP ===================== */
-
+/* ==================== MAIN APP ==================== */
 export default function App() {
   const [tab, setTab] = useState("cleaner"); // "cleaner" | "customer"
-  const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [fetchErr, setFetchErr] = useState("");
-  const [filter, setFilter] = useState(DEFAULT_VIEW); // "today" | "week" | "all"
+  const [events, setEvents] = useState([]);
+  const [apiInfo, setApiInfo] = useState({ total: 0, normalized: 0, error: "" });
+  const [range, setRange] = useState("today"); // today | week | all
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState({}); // { jobId: boolean }
+  const [beforeFiles, setBeforeFiles] = useState({}); // { jobId: File[] }
+  const [afterFiles, setAfterFiles] = useState({}); // { jobId: File[] }
+
+  // Customer portal
+  const [phone, setPhone] = useState("");
+  const [customerReady, setCustomerReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setLoading(true);
-      setFetchErr("");
       try {
         const r = await fetch("/api/jobs", { cache: "no-store" });
-        if (!r.ok) throw new Error(`API ${r.status}`);
         const data = await r.json();
-        const events = Array.isArray(data?.events) ? data.events : [];
-        if (!cancelled) setJobs(events);
+        if (cancelled) return;
+
+        const rows = Array.isArray(data?.events) ? data.events : [];
+        const norm = rows.map((row) => {
+          const service = prettyService(row.title, row.notes, row.service_type);
+          return {
+            ...row,
+            service,
+            client_phone: normalizePhone(row.client_phone || ""),
+            startLabel: fmtTime(row.start),
+            endLabel: fmtTime(row.end),
+          };
+        });
+
+        setEvents(norm);
+        setApiInfo({
+          total: rows.length,
+          normalized: norm.length,
+          error: data?.error ? String(data.error) : "",
+        });
       } catch (e) {
-        if (!cancelled) setFetchErr(String(e.message || e));
-      } finally {
-        if (!cancelled) setLoading(false);
+        setApiInfo((p) => ({ ...p, error: "API 500" }));
       }
     })();
     return () => {
@@ -439,31 +318,73 @@ export default function App() {
     };
   }, []);
 
+  const filtered = useMemo(() => {
+    const t0 = todayISO();
+    const t7 = addDaysISO(7);
+
+    return events
+      .filter((e) => {
+        if (range === "today") return e.date === t0;
+        if (range === "week") return e.date >= t0 && e.date <= t7;
+        return true;
+      })
+      .filter((e) => {
+        if (!query.trim()) return true;
+        const q = query.toLowerCase();
+        return (
+          (e.client || "").toLowerCase().includes(q) ||
+          (e.address || "").toLowerCase().includes(q) ||
+          (e.notes || "").toLowerCase().includes(q) ||
+          (e.service || "").toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+  }, [events, range, query]);
+
+  const customerFiltered = useMemo(() => {
+    if (!customerReady) return [];
+    const needle = normalizePhone(phone);
+    if (!needle) return [];
+    return events.filter((e) => normalizePhone(e.client_phone) === needle);
+  }, [events, customerReady, phone]);
+
+  const toggle = (id) => setExpanded((m) => ({ ...m, [id]: !m[id] }));
+  const setBefore = (id, list) =>
+    setBeforeFiles((m) => ({ ...m, [id]: Array.from(list || []) }));
+  const setAfter = (id, list) =>
+    setAfterFiles((m) => ({ ...m, [id]: Array.from(list || []) }));
+
+  /* =============== RENDER =============== */
   return (
     <div className="min-h-screen bg-emerald-50">
-      <header className="sticky top-0 z-10 bg-emerald-50/80 backdrop-blur border-b">
-        <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between gap-3">
+      <header className="bg-white border-b border-slate-200">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src="/logo.png" alt="M.O.R. Clean Daytona" className="h-8 w-8 rounded-full ring-2 ring-emerald-600" />
+            <img src="/logo.png" alt="Logo" className="h-8 w-8 rounded-full" />
             <div>
-              <div className="font-extrabold tracking-wide">M.O.R. Clean Daytona</div>
-              <div className="text-xs text-emerald-700">Women-owned • Family-operated</div>
+              <div className="text-slate-900 font-semibold">M.O.R. Clean Daytona</div>
+              <div className="text-xs text-slate-500">Women-owned • Family-operated</div>
             </div>
           </div>
+
           <div className="flex gap-2">
             <button
-              onClick={() => setTab("cleaner")}
-              className={`px-3 py-2 rounded-lg text-sm font-semibold ${
-                tab === "cleaner" ? "bg-emerald-700 text-white" : "bg-white"
+              className={`px-3 py-1 rounded-md ${
+                tab === "cleaner"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-white border border-slate-300 text-slate-700"
               }`}
+              onClick={() => setTab("cleaner")}
             >
               Cleaner Portal
             </button>
             <button
-              onClick={() => setTab("customer")}
-              className={`px-3 py-2 rounded-lg text-sm font-semibold ${
-                tab === "customer" ? "bg-emerald-700 text-white" : "bg-white"
+              className={`px-3 py-1 rounded-md ${
+                tab === "customer"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-white border border-slate-300 text-slate-700"
               }`}
+              onClick={() => setTab("customer")}
             >
               Customer Portal
             </button>
@@ -471,245 +392,224 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-6">
+      <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === "cleaner" ? (
-          <CleanerView
-            jobs={jobs}
-            loading={loading}
-            fetchErr={fetchErr}
-            filter={filter}
-            setFilter={setFilter}
-            query={query}
-            setQuery={setQuery}
-          />
-        ) : (
-          <CustomerView jobs={jobs} />
-        )}
-
-        <footer className="text-center text-xs text-emerald-700 mt-8">
-          v10 • {todayISO()}
-        </footer>
-      </main>
-    </div>
-  );
-}
-
-/* ===================== CLEANER VIEW ===================== */
-
-function CleanerView({ jobs, loading, fetchErr, filter, setFilter, query, setQuery }) {
-  const filtered = useMemo(() => {
-    const needle = (query || "").toLowerCase().trim();
-    return (jobs || [])
-      .map((ev) => ({
-        ...ev,
-        service: prettyService(ev.title, ev.notes),
-        titleForCard: jobCardTitle(ev),
-      }))
-      .filter((ev) => {
-        const dateOk =
-          filter === "today"
-            ? isToday(ev.date)
-            : filter === "week"
-            ? isThisWeek(ev.date)
-            : withinAllWindow(ev.date);
-        if (!dateOk) return false;
-        if (!needle) return true;
-        const hay =
-          `${ev.client || ""} ${ev.address || ""} ${ev.notes || ""} ${ev.service || ""}`.toLowerCase();
-        return hay.includes(needle);
-      })
-      .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
-  }, [jobs, filter, query]);
-
-  return (
-    <>
-      <div className="flex items-center gap-2 flex-wrap mb-4">
-        {["today", "week", "all"].map((k) => (
-          <button
-            key={k}
-            onClick={() => setFilter(k)}
-            className={`px-4 py-2 rounded-full text-sm font-semibold ${
-              filter === k ? "bg-emerald-700 text-white" : "bg-white"
-            }`}
-          >
-            {k === "today" ? "Today" : k === "week" ? "This Week" : "All"}
-          </button>
-        ))}
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search client, address, notes…"
-          className="ml-auto w-full sm:w-72 px-4 py-2 rounded-lg bg-white outline-none border"
-        />
-      </div>
-
-      {loading && <div className="text-emerald-700">Loading…</div>}
-      {!!fetchErr && (
-        <div className="text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
-          Error: {fetchErr}
-        </div>
-      )}
-      {!loading && filtered.length === 0 && <div>No jobs found.</div>}
-
-      <div className="space-y-4">
-        {filtered.map((ev) => (
-          <JobCard key={ev.id || ev.date + ev.client + ev.start} ev={ev} />
-        ))}
-      </div>
-    </>
-  );
-}
-
-function JobCard({ ev }) {
-  const [open, setOpen] = useState(false);
-  const svc = ev.service || prettyService(ev.title, ev.notes);
-
-  // build checklist based on service
-  const bundle = CHECKLISTS[svc] || CHECKLISTS["Standard Maintenance"];
-
-  // check state
-  const [checked, setChecked] = useState({});
-  const mark = (room, label, v) =>
-    setChecked((prev) => ({ ...prev, [room]: { ...(prev[room] || {}), [label]: v } }));
-
-  return (
-    <div className="rounded-2xl border bg-white overflow-hidden">
-      {/* Card header */}
-      <button
-        className="w-full text-left px-4 sm:px-6 py-4 flex flex-col gap-1 hover:bg-emerald-50"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <div className="flex items-center gap-3 justify-between">
-          <Badge>{svc}</Badge>
-          <div className="text-sm text-emerald-700">{fmtDate(ev.date)} • {fmtTime(ev.start)}{ev.end ? `–${fmtTime(ev.end)}` : ""}</div>
-        </div>
-        <div className="text-xl font-semibold">{jobCardTitle(ev)}</div>
-        {!!ev.address && <div className="text-emerald-700">{ev.address}</div>}
-      </button>
-
-      {/* Collapsible body */}
-      {open && (
-        <div className="px-4 sm:px-6 pb-5">
-          {/* Notes */}
-          {!!ev.notes && (
-            <div className="mb-4 text-[15px] leading-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-              <span className="font-semibold">Notes: </span>
-              {ev.notes}
+          <>
+            <div className="mb-4 text-xs text-slate-500">
+              API events: {apiInfo.total} • normalized: {apiInfo.normalized} •{" "}
+              today: {filtered.filter((e) => e.date === todayISO()).length}{" "}
+              {apiInfo.error && (
+                <span className="text-red-600">• error: {apiInfo.error}</span>
+              )}
             </div>
-          )}
 
-          {/* Sections */}
-          {Object.entries(bundle).map(([room, items]) => (
-            <Section key={room} title={room} defaultOpen={false}>
-              {items.map((label) => (
-                <BigCheckbox
-                  key={label}
-                  label={label}
-                  checked={checked[room]?.[label] || false}
-                  onChange={(v) => mark(room, label, v)}
-                />
-              ))}
-            </Section>
-          ))}
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              <Chip active={range === "today"} onClick={() => setRange("today")}>
+                Today
+              </Chip>
+              <Chip active={range === "week"} onClick={() => setRange("week")}>
+                This Week
+              </Chip>
+              <Chip active={range === "all"} onClick={() => setRange("all")}>
+                All
+              </Chip>
 
-          {/* Photos - separate Before / After */}
-          <Section title="Upload Photos — BEFORE" defaultOpen={false}>
-            <input type="file" multiple accept="image/*" className="block w-full text-sm" />
-            <div className="text-xs text-emerald-700 mt-2">Reminder: capture <b>3 angles</b> per room.</div>
-          </Section>
+              <input
+                className="ml-auto w-full sm:w-80 border border-slate-300 rounded-md px-3 py-2"
+                placeholder="Search client, address, notes…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
 
-          <Section title="Upload Photos — AFTER" defaultOpen={false}>
-            <input type="file" multiple accept="image/*" className="block w-full text-sm" />
-            <div className="text-xs text-emerald-700 mt-2">Reminder: capture <b>3 angles</b> per room.</div>
-          </Section>
-        </div>
-      )}
-    </div>
-  );
-}
+            {filtered.length === 0 ? (
+              <div className="text-slate-500">No jobs found.</div>
+            ) : (
+              <div className="space-y-3">
+                {filtered.map((job) => {
+                  const id = job.id || `${job.date}-${job.client}-${job.start}`;
+                  const isOpen = !!expanded[id];
+                  const list =
+                    CHECKLISTS[job.service] || CHECKLISTS["Standard Clean"];
 
-/* ===================== CUSTOMER VIEW ===================== */
+                  return (
+                    <div key={id} className="bg-white border border-slate-200 rounded-xl">
+                      <button
+                        onClick={() => toggle(id)}
+                        className="w-full text-left px-4 py-3 flex items-center gap-3"
+                      >
+                        <span className="inline-flex px-2 py-0.5 text-xs rounded-full bg-emerald-100 text-emerald-800">
+                          {job.service}
+                        </span>
+                        <div className="font-medium text-slate-900">{job.client || "Client"}</div>
+                        <div className="ml-auto text-sm text-slate-500">
+                          {job.date} • {job.startLabel || job.start}
+                          {job.endLabel ? ` — ${job.endLabel}` : ""}
+                        </div>
+                      </button>
 
-function CustomerView({ jobs }) {
-  const [phone, setPhone] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+                      {isOpen && (
+                        <div className="px-4 pb-4">
+                          {job.address && (
+                            <div className="text-sm text-slate-600 mb-2">
+                              {job.address}
+                            </div>
+                          )}
+                          {job.notes && (
+                            <div className="text-sm text-slate-600 mb-4">
+                              <span className="font-medium">Notes: </span>
+                              {job.notes}
+                            </div>
+                          )}
 
-  const mine = useMemo(() => {
-    const digits = onlyDigits(phone);
-    if (!digits) return [];
-    return (jobs || [])
-      .filter((ev) => {
-        const their = onlyDigits(ev.client_phone || "");
-        return their && digits === their; // exact match
-      })
-      .map((ev) => ({ ...ev, service: prettyService(ev.title, ev.notes), titleForCard: jobCardTitle(ev) }))
-      .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
-  }, [jobs, phone, submitted]);
+                          {/* Checklists */}
+                          {Object.entries(list).map(([room, tasks]) => (
+                            <details key={room} className="mb-3" open={false}>
+                              <summary className="cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-slate-800 font-medium">
+                                {room}
+                              </summary>
+                              <div className="p-3 border border-t-0 border-slate-200 rounded-b-md">
+                                <ul className="space-y-2">
+                                  {tasks.map((t) => (
+                                    <li key={t} className="flex items-start gap-3">
+                                      <input
+                                        type="checkbox"
+                                        className="mt-1 scale-125 accent-emerald-600"
+                                      />
+                                      <span className="text-[15px] text-slate-800">{t}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </details>
+                          ))}
 
-  return (
-    <div className="bg-white rounded-2xl border p-5">
-      {!submitted ? (
-        <>
-          <div className="text-lg font-semibold mb-2">View my schedule & photos</div>
-          <label className="block text-sm mb-1">Phone number on file</label>
-          <input
-            inputMode="tel"
-            placeholder="(###) ###-####"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            className="w-full max-w-sm px-4 py-3 rounded-xl border text-lg"
-          />
-          <button
-            onClick={() => setSubmitted(true)}
-            className="mt-3 px-5 py-3 rounded-xl bg-emerald-700 text-white font-semibold"
-          >
-            View my schedule & photos
-          </button>
-          <div className="text-xs text-emerald-700 mt-2">
-            We use your phone to show <b>only</b> your cleans and photos.
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 mb-4">
-            <button
-              onClick={() => setSubmitted(false)}
-              className="px-3 py-2 rounded-lg bg-white border"
-            >
-              Change number
-            </button>
-            <div className="text-sm text-emerald-700">Showing results for: <b>{phone}</b></div>
-          </div>
-
-          {mine.length === 0 && <div>No cleans found for that phone number.</div>}
-
-          <div className="space-y-4">
-            {mine.map((ev) => (
-              <div key={ev.id || ev.date + ev.client + ev.start} className="rounded-2xl border p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <Badge>{ev.service}</Badge>
-                  <div className="text-sm text-emerald-700">
-                    {fmtDate(ev.date)} • {fmtTime(ev.start)}{ev.end ? `–${fmtTime(ev.end)}` : ""}
-                  </div>
-                </div>
-                <div className="text-lg font-semibold mt-1">{ev.titleForCard}</div>
-                {!!ev.address && <div className="text-emerald-700">{ev.address}</div>}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-                  <div className="rounded-xl bg-emerald-50/50 p-3">
-                    <div className="font-semibold mb-2">Before photos</div>
-                    <div className="text-sm text-emerald-700">Your before photos will appear here after your clean.</div>
-                  </div>
-                  <div className="rounded-xl bg-emerald-50/50 p-3">
-                    <div className="font-semibold mb-2">After photos</div>
-                    <div className="text-sm text-emerald-700">Your after photos will appear here after your clean.</div>
-                  </div>
+                          {/* Photos */}
+                          <Section title="Photos">
+                            <div className="grid sm:grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-sm font-medium mb-1">
+                                  Before (3 angles per room)
+                                </div>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  onChange={(e) => setBefore(id, e.target.files)}
+                                />
+                                {beforeFiles[id]?.length > 0 && (
+                                  <div className="mt-2 text-xs text-slate-500">
+                                    {beforeFiles[id].length} file(s) selected
+                                  </div>
+                                )}
+                              </div>
+                              <div>
+                                <div className="text-sm font-medium mb-1">
+                                  After (3 angles per room)
+                                </div>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  onChange={(e) => setAfter(id, e.target.files)}
+                                />
+                                {afterFiles[id]?.length > 0 && (
+                                  <div className="mt-2 text-xs text-slate-500">
+                                    {afterFiles[id].length} file(s) selected
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </Section>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        ) : (
+          // ======== CUSTOMER PORTAL ========
+          <div className="max-w-xl">
+            {!customerReady ? (
+              <div className="bg-white border border-slate-200 rounded-xl p-4">
+                <h2 className="text-lg font-semibold mb-2">Customer Portal</h2>
+                <p className="text-sm text-slate-600 mb-3">
+                  Enter the phone number we have on file to view your schedule and
+                  photos.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    inputMode="tel"
+                    placeholder="(###) ###-####"
+                    className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-lg"
+                  />
+                  <button
+                    onClick={() => setCustomerReady(true)}
+                    className="px-4 py-2 rounded-md bg-emerald-600 text-white"
+                  >
+                    View
+                  </button>
                 </div>
               </div>
-            ))}
+            ) : (
+              <div className="space-y-6">
+                <div className="text-sm text-slate-600">
+                  Showing results for phone ending{" "}
+                  <span className="font-medium">
+                    {normalizePhone(phone).slice(-4)}
+                  </span>
+                  . <button
+                    className="text-emerald-700 underline ml-1"
+                    onClick={() => setCustomerReady(false)}
+                  >
+                    change
+                  </button>
+                </div>
+
+                <Section title="Upcoming Cleans">
+                  {customerFiltered.length === 0 ? (
+                    <div className="text-slate-500">No upcoming cleans.</div>
+                  ) : (
+                    <ul className="space-y-2">
+                      {customerFiltered
+                        .filter((e) => e.date >= todayISO())
+                        .map((e) => (
+                          <li
+                            key={e.id}
+                            className="bg-white border border-slate-200 rounded-md px-3 py-2"
+                          >
+                            <div className="text-sm text-slate-900">
+                              {e.date} — {e.service}
+                            </div>
+                            <div className="text-xs text-slate-600">
+                              {e.client} • {e.address}
+                            </div>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                </Section>
+
+                <Section title="Past Photos">
+                  <div className="text-slate-500 text-sm">
+                    Past visit photos will appear here after your clean is
+                    completed and uploaded. (Your cleaners attach “Before” and
+                    “After” photos separately for clarity.)
+                  </div>
+                </Section>
+              </div>
+            )}
           </div>
-        </>
-      )}
+        )}
+      </main>
+
+      <footer className="text-center text-xs text-slate-500 py-10">
+        v10 • {new Date().toISOString().slice(0, 10)}
+      </footer>
     </div>
   );
 }
