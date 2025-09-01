@@ -90,8 +90,21 @@ function prettyService(rawTitle = "", notes = "") {
   const direct = SERVICE_ID_MAP[rawTitle];
   if (direct) return direct;
 
-  const looksLikeId = /^[A-Z0-9]{20,36}$/.test(rawTitle.trim());
-  const base = looksLikeId ? "" : rawTitle.trim();
+  // Put near the other helpers
+const looksLikeId = (s = "") => /^[A-Z0-9]{12,}$/.test((s || "").trim());
+
+// Prefer client name; if it looks like an ID, skip it. Then try address.
+// If both are missing, show a friendly service label.
+function jobCardTitle(ev = {}) {
+  const maybeClient = (ev.client || "").trim();
+  if (maybeClient && !looksLikeId(maybeClient)) return maybeClient;
+
+  const maybeAddr = (ev.address || "").trim();
+  if (maybeAddr && !looksLikeId(maybeAddr)) return maybeAddr;
+
+  return prettyService(ev.title, ev.notes);
+}
+
 
   const hay = (base || notes || "").toLowerCase();
 
