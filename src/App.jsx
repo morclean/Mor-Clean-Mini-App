@@ -1,79 +1,66 @@
 // src/App.jsx
 import { useEffect, useMemo, useState } from "react";
 
-/* =====================  small helpers  ===================== */
+/* =====================  helpers  ===================== */
 
-const TZ = "America/New_York"; // change if you operate in another timezone
-
+const TZ = "America/New_York";
 const todayISO = () =>
-  new Date().toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
-
+  new Date().toLocaleDateString("en-CA", { timeZone: TZ });
 const addDays = (d, days) =>
-  new Date(new Date(d).getTime() + days * 24 * 60 * 60 * 1000)
-    .toLocaleDateString("en-CA", { timeZone: TZ });
-
+  new Date(new Date(d).getTime() + days * 86400000).toLocaleDateString("en-CA", { timeZone: TZ });
 const fmtTime = (t) => (t ? t : "");
-
 const withinThisWeek = (iso) => {
   const start = todayISO();
   const end = addDays(start, 6);
   return iso >= start && iso <= end;
 };
 
-// map Square-ish titles → our service names if the sheet is missing it
+// map Square service-variation IDs (if you want) → human label
 const SERVICE_ID_MAP = {
-  "POWVHCWKBLS5LNVIKAWQRQJM": "Standard clean",
-  "DPMF5IVR654A73BPPHZFQIIM": "Standard clean",
+  POWVHCWKBLS5LNVIKAWQRQJM: "Standard clean",
+  DPMF5IVR654A73BPPHZFQIIM: "Standard clean",
 };
 
-// try to recognize service type from title + notes if missing
 function prettyService(rawTitle = "", notes = "") {
   const direct = SERVICE_ID_MAP[rawTitle];
   if (direct) return direct;
 
-  // If it *looks* like a 20–36 char all-caps id, ignore as human label
   const looksLikeId = /^[A-Z0-9]{20,36}$/.test(rawTitle.trim());
   const base = looksLikeId ? "" : rawTitle.trim();
 
   const hay = (base || notes || "").toLowerCase();
-  const match = (labels) => labels.find((w) => hay.includes(w));
+  const hit = (xs) => xs.find((w) => hay.includes(w));
 
-  if (match(["airbnb", "turnover"])) return "Airbnb Turnover";
-  if (match(["move-in", "move out", "move-out"])) return "Move-in/Move-out Clean";
-  if (match(["post-construction", "post construction"])) return "Post-Construction Clean";
-  if (match(["deep clean", "deep"])) return "Deep Clean";
-  if (match(["listing", "realtor", "showing"])) return "Real Estate Listing Prep";
-  if (match(["office", "commercial"])) return "Small Office / Commercial";
-  if (match(["one time", "one-time"])) return "One-time Cleaning Service";
+  if (hit(["airbnb", "turnover"])) return "Airbnb Turnover";
+  if (hit(["move-in", "move out", "move-out"])) return "Move-in/Move-out Clean";
+  if (hit(["post-construction", "post construction"])) return "Post-Construction Clean";
+  if (hit(["deep clean", "deep"])) return "Deep Clean";
+  if (hit(["listing", "realtor", "showing"])) return "Real Estate Listing Prep";
+  if (hit(["office", "commercial"])) return "Small Office / Commercial";
+  if (hit(["one time", "one-time"])) return "One-time Cleaning Service";
 
   return "Standard Clean";
 }
 
-// Choose a human display name for a job
+// ⬇️ NEW: robust client display (ignores Square-ish IDs in BOTH client and title)
 const displayClient = (e) => {
   const looksLikeId = (s) => /^[A-Z0-9]{20,36}$/.test((s || "").trim());
-  const candidates = [
-    e.client,
-    !looksLikeId(e.title) ? e.title : "",
-    (e.address || "").split(",")[0], // first chunk of address
-  ]
-    .map((x) => (x || "").trim())
-    .filter(Boolean);
+  const name = !looksLikeId(e.client) ? e.client : "";
+  const title = !looksLikeId(e.title) ? e.title : "";
+  const addrFirst = (e.address || "").split(",")[0];
 
-  return candidates[0] || "Client";
+  return (name || title || addrFirst || "Client").trim();
 };
 
-// nice badge
 const Badge = ({ children }) => (
   <span className="inline-block rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold px-2 py-1">
     {children}
   </span>
 );
 
-/* =====================  checklist data  ===================== */
+/* =====================  checklists  ===================== */
 
 const CHECKLISTS = {
-  // Base Residential
   Standard: {
     "Arrival / Safety": [
       "Park legally, avoid blocking driveways / walkways",
@@ -97,20 +84,18 @@ const CHECKLISTS = {
     ],
     Bedrooms: [
       "Make bed(s)",
-      "Dust surfaces (tops + reachable fronts)",
+      "Dust surfaces",
       "Tidy surfaces",
-      "Floors vacuumed / hard floors mopped",
+      "Floors vacuumed / mopped",
       "Empty small bins",
     ],
     "Living / Common": [
       "Dust surfaces + electronics (lightly)",
-      "Cushions fluffed, visible tidy",
+      "Tidy + reset furniture",
       "Glass / mirrors spot-free",
       "Floors vacuumed / mopped",
     ],
   },
-
-  // Airbnb adds turnovers + extras
   Airbnb: {
     "Arrival / Safety": [
       "Park legally and discreetly",
@@ -119,7 +104,7 @@ const CHECKLISTS = {
     ],
     Kitchen: [
       "Do dishes / run + empty dishwasher (if needed)",
-      "Restock basics (paper towels, dish soap) if supplied",
+      "Restock basics (owner-supplied)",
       "Counters, sink, exterior appliances cleaned",
       "Microwave interior wiped",
       "Floors vacuumed + mopped",
@@ -157,7 +142,6 @@ const CHECKLISTS = {
       "Cabinets interior spot-wiped",
     ],
   },
-
   Deep: {
     "Deep Detail (extra)": [
       "Baseboards + door frames wiped",
@@ -168,29 +152,22 @@ const CHECKLISTS = {
   },
 };
 
-/* =====================  UI controls  ===================== */
+/* =====================  UI bits  ===================== */
 
 const Tabs = ({ value, setValue }) => {
-  const base =
-    "px-3 py-1 rounded-full border text-sm font-medium transition-colors";
+  const base = "px-3 py-1 rounded-full border text-sm font-medium transition-colors";
   const on = "bg-emerald-600 text-white border-emerald-600";
   const off = "bg-white text-slate-700 border-slate-300 hover:bg-slate-50";
   return (
     <div className="flex gap-2">
       {["Today", "This Week", "All"].map((t) => (
-        <button
-          key={t}
-          className={`${base} ${value === t ? on : off}`}
-          onClick={() => setValue(t)}
-        >
+        <button key={t} className={`${base} ${value === t ? on : off}`} onClick={() => setValue(t)}>
           {t}
         </button>
       ))}
     </div>
   );
 };
-
-/* =====================  Job Card  ===================== */
 
 function Room({ title, items, checked, toggle }) {
   return (
@@ -227,51 +204,32 @@ function BeforeAfter({ onBefore, onAfter }) {
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <div className="font-semibold mb-2">Upload BEFORE photos</div>
-        <input
-          type="file"
-          multiple
-          accept="image/*"
-          onChange={(e) => onBefore(Array.from(e.target.files || []))}
-          className="block w-full"
-        />
-        <p className="text-xs text-slate-500 mt-1">
-          Tip: 3 angles per room (wide, mid, detail).
-        </p>
+        <input type="file" multiple accept="image/*" onChange={(e) => onBefore(Array.from(e.target.files || []))} />
+        <p className="text-xs text-slate-500 mt-1">Tip: 3 angles per room (wide, mid, detail).</p>
       </div>
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <div className="font-semibold mb-2">Upload AFTER photos</div>
-        <input
-          type="file"
-          multiple
-          accept="image/*"
-          onChange={(e) => onAfter(Array.from(e.target.files || []))}
-          className="block w-full"
-        />
-        <p className="text-xs text-slate-500 mt-1">
-          Tip: 3 angles per room (wide, mid, detail).
-        </p>
+        <input type="file" multiple accept="image/*" onChange={(e) => onAfter(Array.from(e.target.files || []))} />
+        <p className="text-xs text-slate-500 mt-1">Tip: 3 angles per room (wide, mid, detail).</p>
       </div>
     </div>
   );
 }
 
-function JobCard({ job, defaultOpen = false }) {
+function JobCard({ job }) {
   const [checked, setChecked] = useState({});
   const [beforeFiles, setBeforeFiles] = useState([]);
   const [afterFiles, setAfterFiles] = useState([]);
-
   const toggle = (id) => setChecked((m) => ({ ...m, [id]: !m[id] }));
 
   const service = job.service_type || "Standard Clean";
   const isAirbnb = /airbnb|turnover/i.test(service);
   const isDeep = /deep/i.test(service);
 
-  // compose checklist per job type
   const checklist = useMemo(() => {
     const base = CHECKLISTS.Standard;
     const air = CHECKLISTS.Airbnb;
     const deep = CHECKLISTS.Deep;
-
     if (isAirbnb && isDeep) return { ...air, ...deep };
     if (isAirbnb) return air;
     if (isDeep) return { ...base, ...deep };
@@ -296,7 +254,6 @@ function JobCard({ job, defaultOpen = false }) {
       </summary>
 
       <div className="px-4 pb-5 md:px-6 space-y-4">
-        {/* Notes */}
         {job.notes ? (
           <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-amber-900">
             <strong className="mr-1">Notes:</strong>
@@ -304,17 +261,14 @@ function JobCard({ job, defaultOpen = false }) {
           </div>
         ) : null}
 
-        {/* Rooms */}
         <div className="grid grid-cols-1 gap-3">
           {Object.entries(checklist).map(([room, items]) => (
             <Room key={room} title={room} items={items} checked={checked} toggle={toggle} />
           ))}
         </div>
 
-        {/* Photos */}
         <BeforeAfter onBefore={setBeforeFiles} onAfter={setAfterFiles} />
 
-        {/* Footer buttons (non-functional placeholders) */}
         <div className="flex flex-wrap gap-3 pt-2">
           <button className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800">
             Save Progress
@@ -347,7 +301,7 @@ function CleanerPortal() {
         const normalized = raw.map((e) => ({
           id:
             e.id ||
-            `${e.date}-${(e.client || "Client").replace(/\s+/g, "_")}-${
+            `${e.date}-${(displayClient(e) || "Client").replace(/\s+/g, "_")}-${
               e.service_type || e.title || "Service"
             }`,
           date: e.date || "",
@@ -363,7 +317,6 @@ function CleanerPortal() {
 
         const todayCount = normalized.filter((e) => e.date === todayISO()).length;
         setApiStats({ api: raw.length, normalized: normalized.length, today: todayCount, error: "" });
-
         setEvents(normalized);
       } catch (err) {
         setApiStats((s) => ({ ...s, error: "API 500" }));
@@ -380,28 +333,26 @@ function CleanerPortal() {
     const q = query.trim().toLowerCase();
     if (q) {
       list = list.filter((e) =>
-        [e.client, e.address, e.notes, e.service_type, e.title]
-          .join(" ")
-          .toLowerCase()
-          .includes(q)
+        [e.client, e.address, e.notes, e.service_type, e.title].join(" ").toLowerCase().includes(q)
       );
     }
 
-    // sort by date + start time
     list.sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
     return list;
   }, [events, tab, query]);
 
   return (
     <div className="space-y-4">
-      {/* header */}
-      <div className="flex items-center justify-between gap-4">
+      {/* controls (moved stats here to avoid duplicate brand header) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <img src="/logo.png" alt="M.O.R. Clean" className="h-8 w-8 rounded-full" />
-          <div>
-            <div className="font-bold text-xl">M.O.R. Clean Daytona</div>
-            <div className="text-xs text-slate-500">Women-owned • Family-operated</div>
-          </div>
+          <Tabs value={tab} setValue={setTab} />
+          <input
+            className="flex-1 min-w-[220px] rounded-full border border-slate-300 px-3 py-2 text-sm"
+            placeholder="Search client, address, notes…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
         </div>
         <div className="text-xs text-slate-500">
           API events: {apiStats.api} • normalized: {apiStats.normalized} • today: {apiStats.today}
@@ -409,18 +360,6 @@ function CleanerPortal() {
         </div>
       </div>
 
-      {/* controls */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={tab} setValue={setTab} />
-        <input
-          className="flex-1 min-w-[220px] rounded-full border border-slate-300 px-3 py-2 text-sm"
-          placeholder="Search client, address, notes…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </div>
-
-      {/* jobs */}
       {filtered.length === 0 ? (
         <div className="text-slate-500">No jobs found.</div>
       ) : (
@@ -440,8 +379,7 @@ function ClientPortal() {
   const [phone, setPhone] = useState("");
   const [events, setEvents] = useState([]);
   const [loaded, setLoaded] = useState(false);
-
-  const normalizedPhone = (v) => (v || "").replace(/[^\d]/g, "");
+  const digits = (v) => (v || "").replace(/[^\d]/g, "");
 
   const load = async () => {
     setLoaded(false);
@@ -461,11 +399,10 @@ function ClientPortal() {
           client_phone: e.client_phone || "",
           service_type: e.service_type || prettyService(e.title, e.notes),
         }))
-        .filter((e) => normalizedPhone(e.client_phone) === normalizedPhone(phone));
-
+        .filter((e) => digits(e.client_phone) === digits(phone));
       mine.sort((a, b) => (a.date + (a.start || "")).localeCompare(b.date + (b.start || "")));
       setEvents(mine);
-    } catch (e) {
+    } catch {
       setEvents([]);
     } finally {
       setLoaded(true);
@@ -498,33 +435,30 @@ function ClientPortal() {
         </button>
       </div>
 
-      {loaded && (
-        <>
-          {events.length === 0 ? (
-            <div className="text-slate-500">No cleans found for that phone.</div>
-          ) : (
-            <div className="space-y-3">
-              {events.map((e) => (
-                <div
-                  key={e.id}
-                  className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col md:flex-row md:items-center gap-2"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <Badge>{e.service_type}</Badge>
-                      <span className="font-semibold">{e.client}</span>
-                    </div>
-                    <div className="text-slate-600">{e.address}</div>
+      {loaded &&
+        (events.length === 0 ? (
+          <div className="text-slate-500">No cleans found for that phone.</div>
+        ) : (
+          <div className="space-y-3">
+            {events.map((e) => (
+              <div
+                key={e.id}
+                className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col md:flex-row md:items-center gap-2"
+              >
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <Badge>{e.service_type}</Badge>
+                    <span className="font-semibold">{e.client}</span>
                   </div>
-                  <div className="text-sm text-slate-500 min-w-[150px] text-right">
-                    {e.date} {e.start && `• ${fmtTime(e.start)}`}
-                  </div>
+                  <div className="text-slate-600">{e.address}</div>
                 </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
+                <div className="text-sm text-slate-500 min-w-[150px] text-right">
+                  {e.date} {e.start && `• ${fmtTime(e.start)}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
     </div>
   );
 }
@@ -532,11 +466,11 @@ function ClientPortal() {
 /* =====================  App shell  ===================== */
 
 export default function App() {
-  const [view, setView] = useState("cleaner"); // "cleaner" | "client"
+  const [view, setView] = useState("cleaner");
   return (
     <div className="min-h-screen bg-emerald-50/40 text-slate-900">
       <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* top tabs */}
+        {/* single brand header (no duplicate) */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img src="/logo.png" alt="logo" className="h-8 w-8 rounded-full" />
